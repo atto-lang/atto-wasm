@@ -60,6 +60,14 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  const stagedSource=join(scratch,"source.ores");
  await writeFile(stagedSource,sourceBytes,{mode:0o400,flag:"wx"});
  const ir=run(compiler,environment?["--target=wasm32",stagedSource]:[stagedSource]);
+ // The executable itself is also caller-owned mutable input. Never publish
+ // provenance tied to a compiler digest if its executable changed in flight.
+ if(sha(await readFile(compiler))!==actualCompilerHash)
+  throw Error("compiler executable changed during execution; refusing stale provenance");
+ // Reject mutation of the snapshotted compilation input even when the
+ // original caller path remains unchanged.
+ if(sha(await readFile(stagedSource))!==sha(sourceBytes))
+  throw Error("staged compiler input changed during execution");
  if(environment&&!/target triple = "wasm32-unknown-unknown"/.test(ir))
   throw Error("compiler did not emit wasm32 target-marked IR");
  if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
