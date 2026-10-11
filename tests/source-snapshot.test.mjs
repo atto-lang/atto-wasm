@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp,writeFile,readFile,chmod,rm,symlink,open} from "node:fs/promises";
+import {mkdtemp,writeFile,readFile,chmod,rm,symlink,link,open} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createHash} from "node:crypto";
@@ -140,5 +140,29 @@ test("oversized sparse compiler rejected before reading executable bytes",async(
    compileOresToWasm({source,compiler,output:join(root,"guest.wasm")}),
    /compiler exceeds 256 MiB executable budget/
   );
+ }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("existing output symlinks and hardlinks to inputs fail before clobber",async()=>{
+ const root=await mkdtemp(join(tmpdir(),"ores-wasm-input-inodes-"));
+ try{
+  const source=join(root,"source.ores"),compiler=join(root,"compiler.sh");
+  const initial="pub fnc main(): int { return 42; }\n";
+  await writeFile(source,initial);
+  await writeFile(compiler,"#!/bin/sh\necho ir\n",{mode:0o700});
+  for(const [file,kind] of [
+    [join(root,"source-symlink.wasm"),"symlink"],
+    [join(root,"source-hardlink.wasm"),"hardlink"],
+    [join(root,"compiler-symlink.wasm"),"compiler"]
+  ]){
+   if(kind==="hardlink")await link(source,file);
+   else await symlink(kind==="compiler"?compiler:source,file);
+   await assert.rejects(
+    compileOresToWasm({source,compiler,output:file}),
+    /overlaps a compiler\/source input/
+   );
+  }
+  assert.equal(await readFile(source,"utf8"),initial);
+  assert.equal(await readFile(compiler,"utf8"),"#!/bin/sh\necho ir\n");
  }finally{await rm(root,{recursive:true,force:true})}
 });
