@@ -16,3 +16,8 @@ Initialization never increases permissions on its own: **the embedding host must
 Mailbox: capacity eight; FIFO; single global queue; no threads or concurrent execution; enqueue returns 0 on overflow. Zero is a valid message; successful dequeue is indicated separately. No heap allocation, scheduler, interrupts or actor identity. All functions are subject to later ABI versioning.
 
 Memory layout, ABI stability, host capability verification, component model binding, cross-module actors, exception semantics and async support are pending. Do not use as a production security or actor-isolation primitive.
+
+
+## Pure guest Wasm bridging
+
+\`scripts/compile-ores.mjs\` builds a **separate**, pure-integer guest module from the native LLVM compiler's emitted IR. It currently exports a zero-argument \`main\` returning Wasm i64 (JavaScript \`BigInt\`) and rejects any module imports. It is not linked to the above runtime ABI, which exports \`ores_rt_*\` and a capability-checked host clock. Joining guest and runtime safely requires a stable ABI for references, memory, async frames and ownership transfer.
