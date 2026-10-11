@@ -27,6 +27,7 @@ Descriptors: `string`, `i64`, `bool`, `bytes`, `{tuple:["string","i64"]}`, `{arr
 
 - Maximum message size: 1 MiB including header; callers may tighten it.
 - Nesting depth at most 12; maximum list/array bound 4096; at most 256 contract variants and 64 fields per variant.
+- Total normalized schema complexity is limited to 4096 type descriptor nodes and 64 KiB of canonical UTF-8 JSON. This is separate from the 4096 visited-value node limit that rejects zero-byte nested-container CPU amplification.
 - Mandatory ownership policy is copy. Encoder snapshots typed bytes, and decoder snapshots its entire input before asynchronous WebCrypto hashing.
 - SharedArrayBuffer views and implicit type coercions are rejected. No shared linear memory, borrowed pointers, implicit host imports, or zero-copy transfer in v1.
 - Unknown variants, alternative IDs, malformed/trailing payloads, incompatible schemas, unsupported flags and versions, invalid UTF-8, noncanonical boolean and over-budget messages fail closed.
