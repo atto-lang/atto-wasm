@@ -37,6 +37,12 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  absolute(compiler,"compiler");
  absolute(source,"source");
  absolute(output,"output");
+ const protectedInputs=new Set([resolve(source),resolve(compiler)]);
+ // Do not let the executable or sidecars replace an input by path alias.
+ for(const destination of [output,output+".provenance.json",output+".artifact.json"]){
+  if(protectedInputs.has(resolve(destination)))
+   throw Error("output or artifact metadata path overlaps a compiler/source input");
+ }
  if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(exportName))throw Error("unsupported export name");
  const [sourceBytes,compilerBytes]=await Promise.all([readFile(source),readFile(compiler)]);
  if(sourceBytes.length>1024*1024)throw Error("source exceeds 1 MiB compiler bridge budget");
@@ -44,17 +50,28 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  if(compilerSha256!==undefined&&compilerSha256!==actualCompilerHash)throw Error("compiler binary SHA-256 does not match pinned hash");
  if(environment!==undefined&&!["browser","edge-js","edge-wasi"].includes(environment))
   throw Error("unsupported portable host environment");
- const ir=run(compiler,environment?["--target=wasm32",source]:[source]);
+ await mkdir(dirname(output),{recursive:true});
+ // Compile exactly the already-hashed source snapshot, not a mutable path.
+ // The current scalar subset supports standalone source files; relative
+ // source imports must be resolved and pinned by a future module graph gate.
+ const scratch=await mkdtemp(join(dirname(output),".oreslang-wasm-"));
+ const provisional=join(scratch,"guest.wasm");
+ try{
+ const stagedSource=join(scratch,"source.ores");
+ await writeFile(stagedSource,sourceBytes,{mode:0o400,flag:"wx"});
+ const ir=run(compiler,environment?["--target=wasm32",stagedSource]:[stagedSource]);
+ // The executable itself is also caller-owned mutable input. Never publish
+ // provenance tied to a compiler digest if its executable changed in flight.
+ if(sha(await readFile(compiler))!==actualCompilerHash)
+  throw Error("compiler executable changed during execution; refusing stale provenance");
+ // Reject mutation of the snapshotted compilation input even when the
+ // original caller path remains unchanged.
+ if(sha(await readFile(stagedSource))!==sha(sourceBytes))
+  throw Error("staged compiler input changed during execution");
  if(environment&&!/target triple = "wasm32-unknown-unknown"/.test(ir))
   throw Error("compiler did not emit wasm32 target-marked IR");
  if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
  if(ir.length>2*1024*1024)throw Error("generated IR exceeds 2 MiB");
- await mkdir(dirname(output),{recursive:true});
- // Compile into a unique scratch directory. Never leave an unverified Wasm
- // module at the final output path following a failed build or admission.
- const scratch=await mkdtemp(join(dirname(output),".oreslang-wasm-"));
- const provisional=join(scratch,"guest.wasm");
- try{
  // Avoid shell expansion and avoid relying on persistent temporary LLVM IR.
  // Clang reads the native compiler's verified stdout as LLVM IR.
  run(clang,["--target=wasm32","-x","ir","-Oz","-nostdlib",
@@ -88,9 +105,12 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   await writeFile(join(scratch,"artifact.json"),JSON.stringify(manifest,null,2)+"\n");
  }
  await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
- await rename(provisional,output);
- await rename(join(scratch,"provenance.json"),output+".provenance.json");
+ // Publish metadata first; never expose a new executable after metadata
+ // publication failed. Consumers must still SHA-check all sidecars: separate
+ // files cannot be atomically committed as one transaction.
  if(environment)await rename(join(scratch,"artifact.json"),output+".artifact.json");
+ await rename(join(scratch,"provenance.json"),output+".provenance.json");
+ await rename(provisional,output);
  return record;
  }finally{await rm(scratch,{recursive:true,force:true})}
 }
