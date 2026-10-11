@@ -57,3 +57,14 @@ test("noncanonical MessagePack headers and malformed structures reject",async()=
  await assert.rejects(encode(config("demo.Bad","T[I,]",[1n])),/shape/);
  await assert.rejects(encode(config("demo.Bad","I",1)),/BigInt/);
 });
+
+test("untrusted oversized frames are rejected before owned snapshot allocation",async()=>{
+ const b=new Uint8Array(2*1024*1024);
+ await assert.rejects(
+  decode({schemaId:"demo.String.v1",descriptor:"S",bytes:b,maxBytes:128}),
+  /frame byte budget/);
+ const view=b.subarray(1,1024*1024+2);
+ await assert.rejects(
+  decode({schemaId:"demo.String.v1",descriptor:"S",bytes:view,maxBytes:1024*1024}),
+  /frame byte budget/);
+});
