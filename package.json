@@ -7,6 +7,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node scripts/build.mjs && node --test"
+    "test": "node scripts/build.mjs && node --test",
+    "compile:ores": "node scripts/compile-ores.mjs",
+    "test:real-compiler": "node --test tests/bridge.test.mjs"
   }
 }
