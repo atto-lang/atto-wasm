@@ -7,10 +7,15 @@ import {compileOresToWasm} from "../scripts/compile-ores.mjs";
 
 // A compiler-stdout stand-in, NOT evidence of native Oreslang frontend execution.
 async function fixture(dir){
- const compiler=join(dir,"compiler.sh"),source=join(dir,"source.ores");
- await writeFile(compiler,"#!/bin/sh\\nprintf 'target triple = \\\"wasm32-unknown-unknown\\\"\\\\ndefine i64 @main() { ret i64 42 }\\\\n'\\n",{mode:0o700});
+ const compiler=join(dir,"compiler.mjs"),source=join(dir,"source.ores");
+ const ir=['target triple = "wasm32-unknown-unknown"',
+   'define i64 @main() { ret i64 42 }'].join("\n")+"\n";
+ // Produce a REAL runnable compiler stand-in so negative publication tests
+ // cannot pass prematurely on ENOENT / a malformed #! interpreter path.
+ await writeFile(compiler,"#!/usr/bin/env node\nprocess.stdout.write("+
+   JSON.stringify(ir)+");\n",{mode:0o700});
  await chmod(compiler,0o700);
- await writeFile(source,"pub fnc main(): int { return 42; }\\n");
+ await writeFile(source,"pub fnc main(): int { return 42; }\n");
  return {compiler,source};
 }
 test("failed artifact sidecar publication cannot expose new Wasm",async()=>{
