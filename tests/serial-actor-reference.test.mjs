@@ -81,17 +81,17 @@ test("a forwarded malformed reply cannot masquerade as a typed result",async()=>
  await assert.rejects(actor.request(compute("x",1)),/invalid message size/);
 });
 test("FIFO single flight and aggregate mailbox capacity are enforced",async()=>{
- const gate=deferred(),seen=[];
+ const gate=deferred(),entered=deferred(),seen=[];
  const actor=createSerialOwnedActor({schema,maxPending:2,receive:async(mail,self)=>{
   seen.push(mail.fields.n);
-  if(mail.fields.n===1n)await gate.promise;
+  if(mail.fields.n===1n){entered.resolve();await gate.promise;}
   await self.respond(result(mail.fields.text,mail.fields.n+1n));
   self.done();
  }});
  const one=actor.request(compute("one",1));
  const two=actor.request(compute("two",2));
  await assert.rejects(actor.request(compute("overflow",3)),/capacity exceeded/);
- await new Promise(resolve=>setImmediate(resolve));
+ await entered.promise;
  assert.deepEqual(seen,[1n]);
  gate.resolve();
  assert.deepEqual(await Promise.all([one,two]),[result("one",2),result("two",3)]);
