@@ -68,3 +68,20 @@ test("untrusted oversized frames are rejected before owned snapshot allocation",
   decode({schemaId:"demo.String.v1",descriptor:"S",bytes:view,maxBytes:1024*1024}),
   /frame byte budget/);
 });
+
+// Regression: the temporary UTF-8 allocation is itself bounded, not just the
+// eventual encoded MessagePack frame.
+test("oversized UTF-8 payloads fail before TextEncoder allocates them",async()=>{
+ const original=TextEncoder.prototype.encode;
+ let oversizedEncodes=0;
+ TextEncoder.prototype.encode=function(input){
+  if(typeof input==="string"&&input.length>10000)oversizedEncodes++;
+  return original.call(this,input);
+ };
+ try{
+  for(const value of ["x".repeat(200000),"🌐".repeat(200000),"é".repeat(200000)]){
+   await assert.rejects(encode({...config("oversize","S",value),maxBytes:64}),/frame byte budget/);
+  }
+  assert.equal(oversizedEncodes,0,"large temporary TextEncoder allocation");
+ }finally{TextEncoder.prototype.encode=original}
+});
