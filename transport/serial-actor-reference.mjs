@@ -30,10 +30,10 @@ export function createSerialOwnedActor({
   Promise.resolve().then(async()=>{
    const raw=await item.encoded;
    const mail=await decodeMessage(schema,raw,{maxBytes});
-   let done=false,disposition=null,response,forwarded;
+   let done=false,finished=false,disposition=null,response,forwarded;
    const outbox=[];
    const open=()=>{
-    if(done)fail("delivery already completed");
+    if(done||finished)fail("delivery already completed");
     if(closed)fail("actor closed");
    };
    const claim=what=>{
@@ -77,7 +77,7 @@ export function createSerialOwnedActor({
    });
    // Intentionally ignore receive's returned VALUE. Await only its
    // completion. A value-returning match cannot implicitly emit a reply.
-   await receive(mail,self);
+   try{await receive(mail,self);}finally{finished=true;}
    if(!done)fail("receive handler must call self.done()");
    await Promise.all(outbox);
    if(item.request){
