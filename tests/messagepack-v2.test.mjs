@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {encodeActorMessage,decodeActorMessage,MESSAGEPACK_ACTOR_V2} from "../transport/messagepack-v2.mjs";
+import {encodeActorMessage,decodeActorMessage,encodeCollectionV2,decodeCollectionV2,MESSAGEPACK_ACTOR_V2} from "../transport/messagepack-v2.mjs";
 
 const vector=[
  ["demo.TupleBoolString.v1","T[B,S]",[true,"foo"],"9402b764656d6f2e5475706c65426f6f6c537472696e672e7631c420d254b4ecd3d7964454dcdf86fd10ede585a17b3af27982a289819afdc2379ab292c3a3666f6f"],
@@ -14,11 +14,10 @@ const hex=b=>Buffer.from(b).toString("hex");
 const alt=shape=>[{id:1,shape}];
 test("exact six production Java and native LLVM canonical MessagePack v2 golden vectors",async()=>{
  for(const [domain,shape,input,golden] of vector){
-  const frame=await encodeActorMessage(domain,alt(shape),1,input);
+  const frame=await encodeCollectionV2(domain,shape,input);
   assert.equal(hex(frame),golden,domain);
-  const decoded=await decodeActorMessage(domain,alt(shape),Buffer.from(golden,"hex"));
-  assert.equal(decoded.variantId,1);
-  assert.deepEqual(decoded.value,input);
+  const decoded=await decodeCollectionV2(domain,shape,Buffer.from(golden,"hex"));
+  assert.deepEqual(decoded,input);
  }
 });
 test("closed variant identity distinguishes shape-identical messages",async()=>{
