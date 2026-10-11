@@ -7,6 +7,7 @@
  * All values are schema-directed. All binary buffers are copied.
  */
 const HEADER=44, LIMIT=1048576, DEPTH=12, ITEMS=4096;
+const SCHEMA_NODES=4096, SCHEMA_BYTES=65536;
 const magic=Uint8Array.of(79,82,77,49);
 const enc=new TextEncoder(),dec=new TextDecoder("utf-8",{fatal:true});
 const prim=new Set(["string","i64","bool","bytes"]);
@@ -19,26 +20,27 @@ function unique(a,label){if(new Set(a).size!==a.length)fail("duplicate "+label);
 function name(x){if(typeof x!=="string"||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(x))fail("invalid name");return x;}
 function id(x){if(!Number.isInteger(x)||x<1||x>65535)fail("invalid ID");return x;}
 function bound(x){if(!Number.isInteger(x)||x<0||x>ITEMS)fail("invalid element bound");return x;}
-function type(t,d=0){
+function type(t,d=0,ctx){
  if(d>DEPTH)fail("type nesting too deep");
+ if(++ctx.nodes>SCHEMA_NODES)fail("schema node budget exceeded");
  if(prim.has(t))return t;
  shape(t,["tuple","array","list","enum"],"type");
  const ks=Object.keys(t);if(ks.length!==1)fail("exactly one type required");
  const k=ks[0];
  if(k==="tuple"){
   if(!Array.isArray(t.tuple)||t.tuple.length>64)fail("invalid tuple");
-  return {tuple:t.tuple.map(x=>type(x,d+1))};
+  return {tuple:t.tuple.map(x=>type(x,d+1,ctx))};
  }
  if(k==="array"||k==="list"){
   shape(t[k],k==="array"?["element","length"]:["element","maxLength"],k);
-  return {[k]:k==="array"?{element:type(t[k].element,d+1),length:bound(t[k].length)}
+  return {[k]:k==="array"?{element:type(t[k].element,d+1,ctx),length:bound(t[k].length)}
     :{element:type(t[k].element,d+1),maxLength:bound(t[k].maxLength)}};
  }
  if(!Array.isArray(t.enum)||t.enum.length<1||t.enum.length>256)fail("invalid enum");
  const vs=t.enum.map(v=>{
   shape(v,["id","name","payload"],"enum variant");
   if(!Object.hasOwn(v,"payload"))fail("enum payload declaration required");
-  return {id:id(v.id),name:name(v.name),payload:v.payload===null?null:type(v.payload,d+1)};
+  return {id:id(v.id),name:name(v.name),payload:v.payload===null?null:type(v.payload,d+1,ctx)};
  });
  unique(vs.map(v=>v.id),"enum ID");unique(vs.map(v=>v.name),"enum name");
  return {enum:vs.sort((a,b)=>a.id-b.id)};
@@ -47,15 +49,19 @@ function contract(c){
  shape(c,["schemaVersion","ownership","variants"],"contract");
  if(c.schemaVersion!==1||c.ownership!=="copy")fail("unsupported contract version/ownership");
  if(!Array.isArray(c.variants)||c.variants.length<1||c.variants.length>256)fail("invalid variants");
+ const ctx={nodes:0};
  const vs=c.variants.map(v=>{
   shape(v,["id","name","fields"],"variant");
   if(!Array.isArray(v.fields)||v.fields.length>64)fail("invalid fields");
-  const fields=v.fields.map(f=>{shape(f,["name","type"],"field");return{name:name(f.name),type:type(f.type)}});
+  const fields=v.fields.map(f=>{shape(f,["name","type"],"field");return{name:name(f.name),type:type(f.type,0,ctx)}});
   unique(fields.map(f=>f.name),"field");
   return {id:id(v.id),name:name(v.name),fields};
  });
  unique(vs.map(v=>v.id),"variant ID");unique(vs.map(v=>v.name),"variant name");
- return {schemaVersion:1,ownership:"copy",variants:vs.sort((a,b)=>a.id-b.id)};
+ const normalized={schemaVersion:1,ownership:"copy",variants:vs.sort((a,b)=>a.id-b.id)};
+ // Reject large contracts before WebCrypto hashes attacker-sized JSON.
+ if(enc.encode(JSON.stringify(normalized)).length>SCHEMA_BYTES)fail("schema byte budget exceeded");
+ return normalized;
 }
 async function digest(c){
  if(!globalThis.crypto?.subtle)fail("WebCrypto SHA-256 required");
