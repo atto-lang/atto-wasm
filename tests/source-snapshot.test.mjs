@@ -35,3 +35,27 @@ test("compiler consumes hashed source snapshot even if original changes during e
   assert.equal((new WebAssembly.Instance(new WebAssembly.Module(wasm))).exports.main(),42n);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
+
+
+test("artifact paths cannot clobber source inputs or compiler executable",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"ores-wasm-path-alias-"));
+ try{
+  const compiler=join(dir,"compiler"),out=join(dir,"guest.wasm"),source=join(dir,"source.ores");
+  const original="pub fnc main(): int { return 42; }\n";
+  await writeFile(compiler,"not executable");await writeFile(source,original);
+  for(const destination of [source,compiler]){
+   await assert.rejects(compileOresToWasm({compiler,source,output:destination}),
+    /overlaps a compiler\/source input/);
+  }
+  assert.equal(await readFile(source,"utf8"),original);
+  assert.equal(await readFile(compiler,"utf8"),"not executable");
+  for(const suffix of [".artifact.json",".provenance.json"]){
+   const metadataSource=out+suffix;
+   await writeFile(metadataSource,original);
+   await assert.rejects(compileOresToWasm({
+    compiler,source:metadataSource,output:out
+   }),/overlaps a compiler\/source input/);
+   assert.equal(await readFile(metadataSource,"utf8"),original);
+  }
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
