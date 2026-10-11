@@ -8,11 +8,16 @@ const PREFIX="oreslang.actor.shape.v2/",MAX_BYTES=1048576,MAX_NODES=100000,MAX_D
 const MIN=-(1n<<63n),MAX=(1n<<63n)-1n;
 const err=s=>{throw new TypeError("Oreslang MessagePack v2: "+s)};
 const isShared=x=>typeof SharedArrayBuffer!=="undefined"&&x instanceof SharedArrayBuffer;
-const byteCopy=b=>{
- if(b instanceof ArrayBuffer){if(isShared(b))err("shared memory");return Uint8Array.from(new Uint8Array(b))}
- if(ArrayBuffer.isView(b)&&isShared(b.buffer))err("shared memory is forbidden");
- if(!ArrayBuffer.isView(b))err("expected nonshared binary");
- return Uint8Array.from(new Uint8Array(b.buffer,b.byteOffset,b.byteLength));
+// Admit size BEFORE copying attacker-owned data. An oversized buffer must
+// never consume its own length again as a second, unbounded allocation.
+const byteCopy=(b,maxBytes)=>{
+ if(isShared(b)||ArrayBuffer.isView(b)&&isShared(b.buffer))err("shared memory is forbidden");
+ let view;
+ if(b instanceof ArrayBuffer)view=new Uint8Array(b);
+ else if(ArrayBuffer.isView(b))view=new Uint8Array(b.buffer,b.byteOffset,b.byteLength);
+ else err("expected nonshared binary");
+ if(view.byteLength>maxBytes)err("frame byte budget");
+ return Uint8Array.from(view);
 };
 function schema(id,desc){
  if(typeof id!=="string"||!/^[\x21-\x7e]{1,256}$/.test(id))err("invalid schema ID");
@@ -127,8 +132,7 @@ export async function encodeActorMessageV2({schemaId,descriptor,value,maxBytes=M
  w.binary(hash);w.put(bytes);return w.finish();
 }
 export async function decodeActorMessageV2({schemaId,descriptor,bytes,maxBytes=MAX_BYTES}={}){
- limit(maxBytes);const t=schema(schemaId,descriptor),snapshot=byteCopy(bytes);
- if(snapshot.length>maxBytes)err("frame byte budget");
+ limit(maxBytes);const t=schema(schemaId,descriptor),snapshot=byteCopy(bytes,maxBytes);
  const r=new Reader(snapshot);
  if(r.array()!==4||r.integer()!==2n)err("version/envelope mismatch");
  if(r.string()!==t.id)err("schema ID mismatch");
