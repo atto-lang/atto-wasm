@@ -11,7 +11,7 @@ import {encodeMessage,decodeMessage} from "./owned-envelope.mjs";
 
 const fail=reason=>{throw new TypeError("Oreslang serial mailbox: "+reason)};
 export function createSerialOwnedActor({
- schema,receive,maxPending=64,maxBytes=1048576,routeSend,routeForward
+ schema,receive,maxPending=64,maxBytes=1048576,replyVariants,routeSend,routeForward
 }={}){
  if(typeof receive!=="function")fail("receive callback required");
  if(!Number.isSafeInteger(maxPending)||maxPending<1||maxPending>4096)
@@ -20,6 +20,16 @@ export function createSerialOwnedActor({
   fail("invalid maxBytes");
  if(routeSend!==undefined&&typeof routeSend!=="function")fail("invalid send route");
  if(routeForward!==undefined&&typeof routeForward!=="function")fail("invalid forward route");
+ const replyTypes=new Map();
+ if(replyVariants!==undefined){
+  if(!replyVariants||typeof replyVariants!=="object"||Array.isArray(replyVariants))
+   fail("invalid replyVariants mapping");
+  for(const [kind,kinds] of Object.entries(replyVariants)){
+   if(!Array.isArray(kinds)||kinds.length===0||kinds.some(x=>typeof x!=="string")||
+      new Set(kinds).size!==kinds.length)fail("invalid reply variant set");
+   replyTypes.set(kind,new Set(kinds));
+  }
+ }
 
  const queue=[];
  let running=false,closed=false,active=0;
@@ -31,6 +41,12 @@ export function createSerialOwnedActor({
    const raw=await item.encoded;
    const mail=await decodeMessage(schema,raw,{maxBytes});
    let done=false,finished=false,disposition=null,response,forwarded;
+   const expectedReplies=replyTypes.get(mail.variant);
+   const validateReply=reply=>{
+    if(expectedReplies&&!expectedReplies.has(reply.variant))
+     fail("reply variant not admitted for "+mail.variant);
+    return reply;
+   };
    const outbox=[];
    const open=()=>{
     if(done||finished)fail("delivery already completed");
@@ -38,11 +54,15 @@ export function createSerialOwnedActor({
    };
    const claim=what=>{
     open();
+    if(!item.request)fail("one-way delivery cannot claim a reply");
     if(disposition!==null)fail("reply or forward already claimed");
     disposition=what;
    };
    const self=Object.freeze({
     respond(message){
+     open();
+     if(expectedReplies&&!expectedReplies.has(message?.variant))
+      fail("reply variant not admitted for "+mail.variant);
      claim("respond");
      response=encodeMessage(schema,message,{maxBytes});
      response.catch(()=>{});
@@ -83,7 +103,7 @@ export function createSerialOwnedActor({
    if(item.request){
     if(disposition===null)fail("request completed without respond or forward");
     const replyBytes=await(disposition==="respond"?response:forwarded);
-    return decodeMessage(schema,replyBytes,{maxBytes});
+    return validateReply(await decodeMessage(schema,replyBytes,{maxBytes}));
    }
    if(disposition!==null)fail("one-way message cannot claim a reply");
    return undefined;
