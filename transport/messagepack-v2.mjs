@@ -184,6 +184,31 @@ function makeWire(schema,hash,payload){
  const w=new Writer();w.arr(4);w.int(2n);w.string(schema);w.u8(0xc4);w.u8(32);w.put(hash);w.put(payload);
  return w.finish();
 }
+
+/** Canonical MessagePack v2 collection envelope shared with Java/LLVM. */
+export async function encodeCollectionV2(schema,descriptor,payload){
+ if(!printable(schema)||schema.length>256)fail("invalid collection schema");
+ const shape=parseShape(descriptor),w=new Writer();w.value(shape,payload);
+ const data=w.finish(),hash=await digest(descriptor);
+ return makeWire(schema,hash,data);
+}
+export async function decodeCollectionV2(schema,descriptor,input){
+ if(!printable(schema)||schema.length>256)fail("invalid collection schema");
+ const shape=parseShape(descriptor),bytes=snapshot(input);
+ if(bytes.length>MAX)fail("message byte budget exceeded");
+ const r=new Reader(bytes);
+ if(r.arr()!==4||r.int()!==2n)fail("unsupported envelope version/arity");
+ if(r.str()!==schema)fail("message schema mismatch");
+ if(r.u8()!==0xc4||r.u8()!==32)fail("invalid digest header");
+ const received=r.take(32),expected=await digest(descriptor);
+ if(!equal(received,expected))fail("shape digest mismatch");
+ const value=r.value(shape);
+ if(r.at!==bytes.length)fail("trailing message bytes");
+ const w=new Writer();w.value(shape,value);
+ if(!equal(bytes,makeWire(schema,expected,w.finish())))fail("noncanonical MessagePack encoding");
+ return value;
+}
+
 export async function encodeActorMessage(domain,alternatives,variantId,payload){
  const {byId}=contract(domain,alternatives);
  const entry=byId.get(variantId);if(!entry)fail("undeclared message variant");
