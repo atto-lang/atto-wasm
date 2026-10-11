@@ -44,17 +44,20 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  if(compilerSha256!==undefined&&compilerSha256!==actualCompilerHash)throw Error("compiler binary SHA-256 does not match pinned hash");
  if(environment!==undefined&&!["browser","edge-js","edge-wasi"].includes(environment))
   throw Error("unsupported portable host environment");
- const ir=run(compiler,environment?["--target=wasm32",source]:[source]);
+ await mkdir(dirname(output),{recursive:true});
+ // Compile exactly the already-hashed source snapshot, not a mutable path.
+ // The current scalar subset supports standalone source files; relative
+ // source imports must be resolved and pinned by a future module graph gate.
+ const scratch=await mkdtemp(join(dirname(output),".oreslang-wasm-"));
+ const provisional=join(scratch,"guest.wasm");
+ try{
+ const stagedSource=join(scratch,"source.ores");
+ await writeFile(stagedSource,sourceBytes,{mode:0o400,flag:"wx"});
+ const ir=run(compiler,environment?["--target=wasm32",stagedSource]:[stagedSource]);
  if(environment&&!/target triple = "wasm32-unknown-unknown"/.test(ir))
   throw Error("compiler did not emit wasm32 target-marked IR");
  if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
  if(ir.length>2*1024*1024)throw Error("generated IR exceeds 2 MiB");
- await mkdir(dirname(output),{recursive:true});
- // Compile into a unique scratch directory. Never leave an unverified Wasm
- // module at the final output path following a failed build or admission.
- const scratch=await mkdtemp(join(dirname(output),".oreslang-wasm-"));
- const provisional=join(scratch,"guest.wasm");
- try{
  // Avoid shell expansion and avoid relying on persistent temporary LLVM IR.
  // Clang reads the native compiler's verified stdout as LLVM IR.
  run(clang,["--target=wasm32","-x","ir","-Oz","-nostdlib",
