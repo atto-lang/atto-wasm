@@ -119,7 +119,14 @@ function encode(w,t,x,d=0){
   const fixed=Object.hasOwn(t,"array"),spec=fixed?t.array:t.list;
   if(!Array.isArray(x)||(fixed?x.length!==spec.length:x.length>spec.maxLength))fail("array/list length");
   if(!fixed)w.u32(x.length);
-  x.forEach(v=>encode(w,spec.element,v,d+1));return;
+  // Array.forEach skips sparse holes. With a zero-byte element type this
+  // would silently encode fewer values than the declared length, defeating
+  // node budgets and canonical typed-message round trips.
+  for(let i=0;i<x.length;i++){
+   if(!Object.hasOwn(x,i))fail("sparse array/list element");
+   encode(w,spec.element,x[i],d+1);
+  }
+  return;
  }
  shape(x,["variant","value"],"enum value");
  const v=t.enum.find(a=>a.name===x.variant);if(!v)fail("unknown enum alternative");
