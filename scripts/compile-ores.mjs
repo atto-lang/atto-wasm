@@ -5,8 +5,8 @@
  */
 import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
-import {readFile,writeFile,mkdir} from "node:fs/promises";
-import {dirname,resolve,isAbsolute} from "node:path";
+import {readFile,writeFile,mkdir,mkdtemp,rm,rename} from "node:fs/promises";
+import {dirname,resolve,isAbsolute,join} from "node:path";
 import {fileURLToPath} from "node:url";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
@@ -29,13 +29,18 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
  if(ir.length>2*1024*1024)throw Error("generated IR exceeds 2 MiB");
  await mkdir(dirname(output),{recursive:true});
+ // Compile into a unique scratch directory. Never leave an unverified Wasm
+ // module at the final output path following a failed build or admission.
+ const scratch=await mkdtemp(join(dirname(output),".oreslang-wasm-"));
+ const provisional=join(scratch,"guest.wasm");
+ try{
  // Avoid shell expansion and avoid relying on persistent temporary LLVM IR.
  // Clang reads the native compiler's verified stdout as LLVM IR.
  run(clang,["--target=wasm32","-x","ir","-Oz","-nostdlib",
    "-Wl,--no-entry","-Wl,--export="+exportName,
    "-Wl,--initial-memory=131072","-Wl,--max-memory=131072",
-   "-o",output,"-"],{input:ir});
- const wasm=await readFile(output);
+   "-o",provisional,"-"],{input:ir});
+ const wasm=await readFile(provisional);
  if(!WebAssembly.validate(wasm))throw Error("linker emitted invalid core Wasm");
  const module=new WebAssembly.Module(wasm);
  const imports=WebAssembly.Module.imports(module);
@@ -48,8 +53,11 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   exportName,importCount:imports.length,wasmBytes:wasm.length,
   note:"Binary provenance: exact compiler executable bytes, not proof of source-repository commit or feature parity."
  };
- await writeFile(output+".provenance.json",JSON.stringify(record,null,2)+"\n");
+ await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
+ await rename(provisional,output);
+ await rename(join(scratch,"provenance.json"),output+".provenance.json");
  return record;
+ }finally{await rm(scratch,{recursive:true,force:true})}
 }
 const calledFromCli=process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url);
 if(calledFromCli){
