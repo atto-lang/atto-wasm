@@ -125,11 +125,13 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
 const calledFromCli=process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url);
 if(calledFromCli){
  try{
-  const options=Object.fromEntries(process.argv.slice(2).map(x=>{
+  const options={};
+  for(const x of process.argv.slice(2)){
    const m=/^--(compiler|source|output|export|clang|compiler-sha256|environment)=(.*)$/.exec(x);
    if(!m)throw Error("unexpected CLI option: "+x);
-   return[m[1],m[2]];
-  }));
+   if(Object.hasOwn(options,m[1]))throw Error("duplicate CLI option: "+m[1]);
+   options[m[1]]=m[2];
+  }
   const record=await compileOresToWasm({
    compiler:options.compiler,source:options.source,
    output:options.output||resolve(projectRoot,"build/guest.wasm"),
