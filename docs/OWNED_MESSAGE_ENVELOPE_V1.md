@@ -1,5 +1,21 @@
 # Experimental owned actor message envelope v1
 
+> **Cross-backend transport decision (2026-10-11):** This ORM1 reference
+> frame is **not** the release actor wire protocol and must not be emitted by
+> compiler-generated actor sends or accepted as an alias for MessagePack v2.
+> Java/Graal and LLVM are converging on canonical MessagePack v2:
+> `[2, variant_schema_id, bin8(sha256(canonical_shape_descriptor)), payload]`.
+> The signed-i64, snapshots, byte limits, hostile-decoder tests and browser
+> copying disciplines from this experiment should be migrated into a
+> MessagePack v2 browser/Wasm adapter before any actor guest ABI becomes
+> production. No implicit dual-protocol sniffing/fallback is permitted.
+>
+> Reference: oreslang-source.llvm PR #180,
+> `contracts/v2/actor-messagepack-ownership.md`; Java PR #645.
+> Neither compiler currently proves complete source-level actor transport
+> parity, and ORM1 tests must never be counted as MessagePack interoperability.
+
+
 This is a **host-side reference binary codec**, not compiler lowering, a Wasm guest ABI, an actor scheduler, or production browser parity.
 
 ## Binary structure
