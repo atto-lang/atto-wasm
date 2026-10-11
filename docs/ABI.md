@@ -20,4 +20,4 @@ Memory layout, ABI stability, host capability verification, component model bind
 
 ## Pure guest Wasm bridging
 
-\`scripts/compile-ores.mjs\` builds a **separate**, pure-integer guest module from the native LLVM compiler's emitted IR. It currently exports a zero-argument \`main\` returning Wasm i64 (JavaScript \`BigInt\`) and rejects any module imports. It is not linked to the above runtime ABI, which exports \`ores_rt_*\` and a capability-checked host clock. Joining guest and runtime safely requires a stable ABI for references, memory, async frames and ownership transfer.
+`scripts/compile-ores.mjs` builds a **separate**, pure-integer guest module from the native LLVM compiler's emitted IR. It currently exports a zero-argument `main` returning Wasm i64 (JavaScript `BigInt`) and rejects any module imports. It is not linked to the above runtime ABI, which exports `ores_rt_*` and a capability-checked host clock. Joining guest and runtime safely requires a stable ABI for references, memory, async frames and ownership transfer.
