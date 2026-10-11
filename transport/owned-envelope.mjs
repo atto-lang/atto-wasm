@@ -73,7 +73,8 @@ function stringBytes(s){
  return enc.encode(s);
 }
 class Writer{
- constructor(limit){this.parts=[];this.size=0;this.limit=limit;}
+ constructor(limit){this.parts=[];this.size=0;this.limit=limit;this.visits=0;}
+ visit(){if(++this.visits>ITEMS)fail("value node budget exceeded");}
  put(b){if(!(b instanceof Uint8Array)||b.length>this.limit-this.size)fail("byte budget exceeded");
   if(typeof SharedArrayBuffer!=="undefined"&&b.buffer instanceof SharedArrayBuffer)fail("shared memory not admitted");
   this.parts.push(Uint8Array.from(b));this.size+=b.length;}
@@ -85,7 +86,8 @@ class Writer{
  finish(){const b=new Uint8Array(this.size);let p=0;for(const x of this.parts){b.set(x,p);p+=x.length;}return b;}
 }
 class Reader{
- constructor(b){this.b=b;this.at=0;this.dv=new DataView(b.buffer,b.byteOffset,b.byteLength);}
+ constructor(b){this.b=b;this.at=0;this.dv=new DataView(b.buffer,b.byteOffset,b.byteLength);this.visits=0;}
+ visit(){if(++this.visits>ITEMS)fail("value node budget exceeded");}
  take(n){if(!Number.isSafeInteger(n)||n<0||n>this.b.length-this.at)fail("truncated payload");
   const x=this.b.subarray(this.at,this.at+n);this.at+=n;return x;}
  u8(){this.take(1);return this.dv.getUint8(this.at-1);}
@@ -95,6 +97,7 @@ class Reader{
 }
 function encode(w,t,x,d=0){
  if(d>DEPTH)fail("value nesting too deep");
+ w.visit();
  if(t==="i64")return w.i64(x);
  if(t==="bool"){if(typeof x!=="boolean")fail("expected bool");return w.u8(x?1:0);}
  if(t==="string"||t==="bytes"){
@@ -120,6 +123,7 @@ function encode(w,t,x,d=0){
 }
 function decode(r,t,d=0){
  if(d>DEPTH)fail("value nesting too deep");
+ r.visit();
  if(t==="i64")return r.i64();
  if(t==="bool"){const x=r.u8();if(x>1)fail("noncanonical bool");return !!x;}
  if(t==="string"||t==="bytes"){const b=r.take(r.u32());
@@ -167,7 +171,12 @@ export async function decodeMessage(schema,input,{maxBytes=LIMIT}={}){
  const hash=await digest(c);
  if(!hash.every((x,i)=>x===received[i]))fail("contract SHA-256 mismatch");
  const v=c.variants.find(x=>x.id===variantId);if(!v)fail("unknown message variant");
- const fields={};for(const f of v.fields)fields[f.name]=decode(r,f.type);
+ const fields={};for(const f of v.fields){
+  const value=decode(r,f.type);
+  // Define an OWN property, including for "__proto__", without calling
+  // Object.prototype setters or replacing the resulting object prototype.
+  Object.defineProperty(fields,f.name,{value,enumerable:true,writable:false,configurable:false});
+ }
  if(r.at!==bytes.length)fail("unexpected trailing payload");
  return Object.freeze({variant:v.name,fields:Object.freeze(fields)});
 }
