@@ -75,6 +75,7 @@ function stringBytes(s){
 class Writer{
  constructor(limit){this.parts=[];this.size=0;this.limit=limit;}
  put(b){if(!(b instanceof Uint8Array)||b.length>this.limit-this.size)fail("byte budget exceeded");
+  if(typeof SharedArrayBuffer!=="undefined"&&b.buffer instanceof SharedArrayBuffer)fail("shared memory not admitted");
   this.parts.push(Uint8Array.from(b));this.size+=b.length;}
  u8(n){this.put(Uint8Array.of(n));}
  u16(n){const b=new Uint8Array(2);new DataView(b.buffer).setUint16(0,n,true);this.put(b);}
@@ -130,12 +131,15 @@ function decode(r,t,d=0){
   if(n>ITEMS||(!fixed&&n>spec.maxLength))fail("array/list length");
   const a=[];for(let i=0;i<n;i++)a.push(decode(r,spec.element,d+1));return Object.freeze(a);
  }
- const v=t.enum.find(a=>a.id===r.u16());if(!v)fail("unknown enum ID");
+ const variantId=r.u16();const v=t.enum.find(a=>a.id===variantId);if(!v)fail("unknown enum ID");
  return Object.freeze({variant:v.name,value:v.payload===null?null:decode(r,v.payload,d+1)});
 }
 function snapshot(input){
  if(input instanceof ArrayBuffer)return Uint8Array.from(new Uint8Array(input));
- if(ArrayBuffer.isView(input))return Uint8Array.from(new Uint8Array(input.buffer,input.byteOffset,input.byteLength));
+ if(ArrayBuffer.isView(input)){
+  if(typeof SharedArrayBuffer!=="undefined"&&input.buffer instanceof SharedArrayBuffer)fail("shared memory not admitted");
+  return Uint8Array.from(new Uint8Array(input.buffer,input.byteOffset,input.byteLength));
+ }
  fail("expected message bytes");
 }
 function budget(n){if(!Number.isSafeInteger(n)||n<HEADER||n>LIMIT)fail("invalid maxBytes");}
