@@ -33,7 +33,7 @@ function run(command,args,{input}={}){
  if(output.error||output.status!==0||output.signal)throw Error("command failed ("+command+"): "+(output.error?.message||output.stderr||"exit "+output.status).slice(0,4000));
  return output.stdout||"";
 }
-export async function compileOresToWasm({compiler,source,output,exportName="main",clang=process.env.CLANG||"clang",compilerSha256}){
+export async function compileOresToWasm({compiler,source,output,exportName="main",clang=process.env.CLANG||"clang",compilerSha256,environment}){
  absolute(compiler,"compiler");
  absolute(source,"source");
  absolute(output,"output");
@@ -42,7 +42,11 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  if(sourceBytes.length>1024*1024)throw Error("source exceeds 1 MiB compiler bridge budget");
  const actualCompilerHash=sha(compilerBytes);
  if(compilerSha256!==undefined&&compilerSha256!==actualCompilerHash)throw Error("compiler binary SHA-256 does not match pinned hash");
- const ir=run(compiler,[source]);
+ if(environment!==undefined&&!["browser","edge-js","edge-wasi"].includes(environment))
+  throw Error("unsupported portable host environment");
+ const ir=run(compiler,environment?["--target=wasm32",source]:[source]);
+ if(environment&&!/target triple = "wasm32-unknown-unknown"/.test(ir))
+  throw Error("compiler did not emit wasm32 target-marked IR");
  if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
  if(ir.length>2*1024*1024)throw Error("generated IR exceeds 2 MiB");
  await mkdir(dirname(output),{recursive:true});
@@ -72,9 +76,21 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   clangVersion:run(clang,["--version"]).split("\n")[0],
   note:"Binary provenance: exact compiler executable bytes, not proof of source-repository commit or feature parity."
  };
+ if(environment){
+  const manifest={
+   schemaVersion:1,artifactType:"oreslang.core-wasm.i64-v1",
+   target:"wasm32",environment,backend:"wasm",entry:exportName,
+   wasmSha256:sha(wasm),wasmBytes:wasm.length,requiredCapabilities:[],
+   imports:[],memory:{maximumPages:2},
+   producer:{compilerSha256:actualCompilerHash,
+     sourceSha256:sha(sourceBytes),llvmIrSha256:sha(Buffer.from(ir,"utf8"))}
+  };
+  await writeFile(join(scratch,"artifact.json"),JSON.stringify(manifest,null,2)+"\n");
+ }
  await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
  await rename(provisional,output);
  await rename(join(scratch,"provenance.json"),output+".provenance.json");
+ if(environment)await rename(join(scratch,"artifact.json"),output+".artifact.json");
  return record;
  }finally{await rm(scratch,{recursive:true,force:true})}
 }
@@ -82,7 +98,7 @@ const calledFromCli=process.argv[1]&&resolve(process.argv[1])===fileURLToPath(im
 if(calledFromCli){
  try{
   const options=Object.fromEntries(process.argv.slice(2).map(x=>{
-   const m=/^--(compiler|source|output|export|clang|compiler-sha256)=(.*)$/.exec(x);
+   const m=/^--(compiler|source|output|export|clang|compiler-sha256|environment)=(.*)$/.exec(x);
    if(!m)throw Error("unexpected CLI option: "+x);
    return[m[1],m[2]];
   }));
@@ -90,7 +106,7 @@ if(calledFromCli){
    compiler:options.compiler,source:options.source,
    output:options.output||resolve(projectRoot,"build/guest.wasm"),
    exportName:options.export||"main",clang:options.clang||process.env.CLANG||"clang",
-   compilerSha256:options["compiler-sha256"]
+   compilerSha256:options["compiler-sha256"],environment:options.environment
   });
   console.log(JSON.stringify(record,null,2));
  }catch(error){console.error(error.stack||error.message);process.exitCode=1}
