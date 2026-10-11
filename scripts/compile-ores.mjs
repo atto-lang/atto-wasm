@@ -45,6 +45,13 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  if(environment!==undefined&&!["browser","edge-js","edge-wasi"].includes(environment))
   throw Error("unsupported portable host environment");
  const ir=run(compiler,environment?["--target=wasm32",source]:[source]);
+ // The compiler consumes a path, not the bytes we hashed above. Refuse to
+ // publish a source digest if that path or the compiler changed during use.
+ // This does not attest transitive imports or external toolchain libraries.
+ if(sha(await readFile(source))!==sha(sourceBytes))
+  throw Error("source changed during compiler execution; refusing stale provenance");
+ if(sha(await readFile(compiler))!==actualCompilerHash)
+  throw Error("compiler executable changed during execution; refusing stale provenance");
  if(environment&&!/target triple = "wasm32-unknown-unknown"/.test(ir))
   throw Error("compiler did not emit wasm32 target-marked IR");
  if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
