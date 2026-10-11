@@ -60,6 +60,17 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   throw Error("source exceeds 1 MiB compiler bridge budget or is not a regular file");
  if(!compilerStat.isFile()||compilerStat.size>MAX_COMPILER_BYTES)
   throw Error("compiler exceeds 256 MiB executable budget or is not a regular file");
+ // A destination that already exists might itself be a symlink or hard link
+ // to an input. Reject by inode identity before publishing over the link.
+ // Merely canonicalizing its parent directory does not catch this case.
+ for(const destination of [published,published+".provenance.json",published+".artifact.json"]){
+  try{
+   const existing=await stat(destination);
+   if([sourceStat,compilerStat].some(input=>
+      input.dev===existing.dev&&input.ino===existing.ino))
+    throw Error("output or artifact metadata path overlaps a compiler/source input");
+  }catch(error){if(error?.code!=="ENOENT")throw error}
+ }
  const [sourceBytes,compilerBytes]=await Promise.all([readFile(sourcePath),readFile(compilerPath)]);
  if(sourceBytes.length>MAX_SOURCE_BYTES)throw Error("source exceeds 1 MiB compiler bridge budget");
  if(compilerBytes.length>MAX_COMPILER_BYTES)throw Error("compiler exceeds 256 MiB executable budget");
