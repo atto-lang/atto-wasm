@@ -95,9 +95,13 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   await writeFile(join(scratch,"artifact.json"),JSON.stringify(manifest,null,2)+"\n");
  }
  await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
- await rename(provisional,output);
- await rename(join(scratch,"provenance.json"),output+".provenance.json");
+ // Publish sidecars before exposing executable output. A failed metadata
+ // rename must not expose a newly compiled guest without verifiable metadata.
+ // Separate paths cannot be atomically committed together: consumers must
+ // always verify the content hash against the manifest before instantiation.
  if(environment)await rename(join(scratch,"artifact.json"),output+".artifact.json");
+ await rename(join(scratch,"provenance.json"),output+".provenance.json");
+ await rename(provisional,output);
  return record;
  }finally{await rm(scratch,{recursive:true,force:true})}
 }
