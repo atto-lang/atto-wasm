@@ -130,3 +130,24 @@ test("global value node budget prevents CPU amplification by zero-byte nested va
  forged[44]=0;forged[45]=16;
  await assert.rejects(decodeMessage(schema,forged),/value node budget exceeded/);
 });
+
+
+test("global schema-node budget prevents adversarial type-descriptor amplification",async()=>{
+ const variants=Array.from({length:100},(_,i)=>({
+  id:i+1,name:"V"+i,fields:Array.from({length:50},(_,j)=>({name:"f"+j,type:"i64"}))
+ }));
+ const schema={schemaVersion:1,ownership:"copy",variants};
+ await assert.rejects(encodeMessage(schema,{variant:"V0",fields:{}}),/schema node budget exceeded/);
+ await assert.rejects(decodeMessage(schema,Uint8Array.of(0)),/schema node budget exceeded/);
+});
+test("canonical schema-byte budget rejects enormous valid-looking metadata",async()=>{
+ const variants=Array.from({length:80},(_,i)=>({
+  id:i+1,name:"V"+i,
+  fields:Array.from({length:30},(_,j)=>({
+   name:"f"+j+"_"+("a".repeat(118)),type:"i64"
+  }))
+ }));
+ const schema={schemaVersion:1,ownership:"copy",variants};
+ await assert.rejects(encodeMessage(schema,{variant:"V0",fields:{}}),/schema byte budget exceeded/);
+ await assert.rejects(decodeMessage(schema,Uint8Array.of(0)),/schema byte budget exceeded/);
+});
