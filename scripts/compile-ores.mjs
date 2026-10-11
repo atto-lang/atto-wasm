@@ -58,8 +58,16 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  const provisional=join(scratch,"guest.wasm");
  try{
  const stagedSource=join(scratch,"source.ores");
+ const stagedCompiler=join(scratch,"compiler-exact");
  await writeFile(stagedSource,sourceBytes,{mode:0o400,flag:"wx"});
- const ir=run(compiler,environment?["--target=wasm32",stagedSource]:[stagedSource]);
+ // Execute the exact compiler bytes whose SHA-256 we pinned, not a mutable
+ // caller-supplied pathname that may be replaced between hashing and exec.
+ // The private scratch directory prevents pathname substitution by another
+ // filesystem principal; this is not a sandbox for a malicious compiler.
+ await writeFile(stagedCompiler,compilerBytes,{mode:0o500,flag:"wx"});
+ const ir=run(stagedCompiler,environment?["--target=wasm32",stagedSource]:[stagedSource]);
+ if(sha(await readFile(stagedCompiler))!==actualCompilerHash)
+  throw Error("staged compiler executable changed during execution");
  // The executable itself is also caller-owned mutable input. Never publish
  // provenance tied to a compiler digest if its executable changed in flight.
  if(sha(await readFile(compiler))!==actualCompilerHash)
