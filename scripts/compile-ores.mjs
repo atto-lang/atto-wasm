@@ -5,11 +5,12 @@
  */
 import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
-import {readFile,writeFile,mkdir,mkdtemp,rm,rename} from "node:fs/promises";
-import {dirname,resolve,isAbsolute,join} from "node:path";
+import {readFile,writeFile,mkdir,mkdtemp,rm,rename,realpath,stat} from "node:fs/promises";
+import {dirname,resolve,isAbsolute,join,basename} from "node:path";
 import {fileURLToPath} from "node:url";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
+const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES=16*1024*1024;
 function rejectStartSection(bytes){
  let i=8;
  const u32=()=>{let value=0;for(let j=0;j<5;j++){
@@ -37,24 +38,39 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  absolute(compiler,"compiler");
  absolute(source,"source");
  absolute(output,"output");
- const protectedInputs=new Set([resolve(source),resolve(compiler)]);
- // Do not let the executable or sidecars replace an input by path alias.
- for(const destination of [output,output+".provenance.json",output+".artifact.json"]){
-  if(protectedInputs.has(resolve(destination)))
+ // Resolve directory symlinks ONCE and use that physical pathname for
+ // publication, not the caller's possibly aliased directory spelling.
+ // A lexical resolve() comparison alone can overwrite compiler/source
+ // inputs through an alternate symlinked parent directory.
+ await mkdir(dirname(output),{recursive:true});
+ const [sourcePath,compilerPath,outputParent]=await Promise.all([
+  realpath(source),realpath(compiler),realpath(dirname(output))
+ ]);
+ const published=join(outputParent,basename(output));
+ const protectedInputs=new Set([sourcePath,compilerPath]);
+ for(const destination of [published,published+".provenance.json",published+".artifact.json"]){
+  if(protectedInputs.has(destination))
    throw Error("output or artifact metadata path overlaps a compiler/source input");
  }
  if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(exportName))throw Error("unsupported export name");
- const [sourceBytes,compilerBytes]=await Promise.all([readFile(source),readFile(compiler)]);
- if(sourceBytes.length>1024*1024)throw Error("source exceeds 1 MiB compiler bridge budget");
+ // Preflight before readFile() to avoid allocating attacker-sized compiler
+ // binaries or source buffers, then check the lengths again after reading.
+ const [sourceStat,compilerStat]=await Promise.all([stat(sourcePath),stat(compilerPath)]);
+ if(!sourceStat.isFile()||sourceStat.size>MAX_SOURCE_BYTES)
+  throw Error("source exceeds 1 MiB compiler bridge budget or is not a regular file");
+ if(!compilerStat.isFile()||compilerStat.size>MAX_COMPILER_BYTES)
+  throw Error("compiler exceeds 256 MiB executable budget or is not a regular file");
+ const [sourceBytes,compilerBytes]=await Promise.all([readFile(sourcePath),readFile(compilerPath)]);
+ if(sourceBytes.length>MAX_SOURCE_BYTES)throw Error("source exceeds 1 MiB compiler bridge budget");
+ if(compilerBytes.length>MAX_COMPILER_BYTES)throw Error("compiler exceeds 256 MiB executable budget");
  const actualCompilerHash=sha(compilerBytes);
  if(compilerSha256!==undefined&&compilerSha256!==actualCompilerHash)throw Error("compiler binary SHA-256 does not match pinned hash");
  if(environment!==undefined&&!["browser","edge-js","edge-wasi"].includes(environment))
   throw Error("unsupported portable host environment");
- await mkdir(dirname(output),{recursive:true});
  // Compile exactly the already-hashed source snapshot, not a mutable path.
  // The current scalar subset supports standalone source files; relative
  // source imports must be resolved and pinned by a future module graph gate.
- const scratch=await mkdtemp(join(dirname(output),".oreslang-wasm-"));
+ const scratch=await mkdtemp(join(outputParent,".oreslang-wasm-"));
  const provisional=join(scratch,"guest.wasm");
  try{
  const stagedSource=join(scratch,"source.ores");
@@ -70,7 +86,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   throw Error("staged compiler executable changed during execution");
  // The executable itself is also caller-owned mutable input. Never publish
  // provenance tied to a compiler digest if its executable changed in flight.
- if(sha(await readFile(compiler))!==actualCompilerHash)
+ if(sha(await readFile(compilerPath))!==actualCompilerHash)
   throw Error("compiler executable changed during execution; refusing stale provenance");
  // Reject mutation of the snapshotted compilation input even when the
  // original caller path remains unchanged.
@@ -86,7 +102,11 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
    "-Wl,--no-entry","-Wl,--export="+exportName,
    "-Wl,--initial-memory=131072","-Wl,--max-memory=131072",
    "-o",provisional,"-"],{input:ir});
+ const wasmStat=await stat(provisional);
+ if(!wasmStat.isFile()||wasmStat.size>MAX_WASM_BYTES)
+  throw Error("linked Wasm exceeds 16 MiB artifact budget");
  const wasm=await readFile(provisional);
+ if(wasm.length>MAX_WASM_BYTES)throw Error("linked Wasm exceeds 16 MiB artifact budget");
  if(!WebAssembly.validate(wasm))throw Error("linker emitted invalid core Wasm");
  rejectStartSection(wasm);
  const module=new WebAssembly.Module(wasm);
@@ -116,9 +136,9 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  // Publish metadata first; never expose a new executable after metadata
  // publication failed. Consumers must still SHA-check all sidecars: separate
  // files cannot be atomically committed as one transaction.
- if(environment)await rename(join(scratch,"artifact.json"),output+".artifact.json");
- await rename(join(scratch,"provenance.json"),output+".provenance.json");
- await rename(provisional,output);
+ if(environment)await rename(join(scratch,"artifact.json"),published+".artifact.json");
+ await rename(join(scratch,"provenance.json"),published+".provenance.json");
+ await rename(provisional,published);
  return record;
  }finally{await rm(scratch,{recursive:true,force:true})}
 }
