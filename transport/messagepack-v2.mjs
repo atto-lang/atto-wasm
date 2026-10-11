@@ -10,7 +10,8 @@ const err=s=>{throw new TypeError("Oreslang MessagePack v2: "+s)};
 const isShared=x=>typeof SharedArrayBuffer!=="undefined"&&x instanceof SharedArrayBuffer;
 const byteCopy=b=>{
  if(b instanceof ArrayBuffer){if(isShared(b))err("shared memory");return Uint8Array.from(new Uint8Array(b))}
- if(!ArrayBuffer.isView(b)||isShared(b.buffer))err("expected nonshared binary");
+ if(ArrayBuffer.isView(b)&&isShared(b.buffer))err("shared memory is forbidden");
+ if(!ArrayBuffer.isView(b))err("expected nonshared binary");
  return Uint8Array.from(new Uint8Array(b.buffer,b.byteOffset,b.byteLength));
 };
 function schema(id,desc){
