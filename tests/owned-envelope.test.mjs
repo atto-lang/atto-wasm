@@ -100,3 +100,33 @@ test("bounded messages and explicitly nonshared ownership",async()=>{
   await assert.rejects(encodeMessage(contract,{variant:"Batch",fields}),/shared memory not admitted/);
  }
 });
+
+test("decoder preserves __proto__ as ordinary field without mutating its prototype",async()=>{
+ const schema={schemaVersion:1,ownership:"copy",variants:[{id:1,name:"Proto",fields:[
+  {name:"__proto__",type:{enum:[{id:1,name:"Some",payload:"string"}]}}
+ ]}]};
+ const fields=Object.create(null);
+ fields.__proto__={variant:"Some",value:"not a prototype"};
+ const bytes=await encodeMessage(schema,{variant:"Proto",fields});
+ const result=await decodeMessage(schema,bytes);
+ assert.equal(Object.getPrototypeOf(result.fields),Object.prototype);
+ assert.equal(Object.hasOwn(result.fields,"__proto__"),true);
+ assert.deepEqual(Object.getOwnPropertyDescriptor(result.fields,"__proto__").value,
+  {variant:"Some",value:"not a prototype"});
+ assert.equal(Object.isFrozen(result.fields),true);
+});
+test("global value node budget prevents CPU amplification by zero-byte nested values",async()=>{
+ const schema={schemaVersion:1,ownership:"copy",variants:[{id:1,name:"Zero",fields:[
+  {name:"values",type:{list:{element:{tuple:[]},maxLength:4096}}}
+ ]}]};
+ const many=Array.from({length:4095},()=>[]);
+ const valid=await encodeMessage(schema,{variant:"Zero",fields:{values:many}});
+ assert.equal((await decodeMessage(schema,valid)).fields.values.length,4095);
+ await assert.rejects(
+  encodeMessage(schema,{variant:"Zero",fields:{values:[...many,[]]}}),
+  /value node budget exceeded/);
+ const forged=valid.slice();
+ // A list count is the first payload u32; raise it from 4095 to 4096.
+ forged[44]=0;forged[45]=16;
+ await assert.rejects(decodeMessage(schema,forged),/value node budget exceeded/);
+});
