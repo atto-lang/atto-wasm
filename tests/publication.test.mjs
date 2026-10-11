@@ -34,3 +34,26 @@ test("failed provenance sidecar publication cannot expose new Wasm",async()=>{
   await assert.rejects(readFile(output),/ENOENT/);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
+
+test("oversized linked Wasm is rejected before it is read or published",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"ores-wasm-output-budget-"));
+ try{
+  const {compiler,source}=await fixture(dir);
+  const clang=join(dir,"clang-oversize.mjs"),output=join(dir,"guest.wasm");
+  await writeFile(clang,[
+   "#!/usr/bin/env node",
+   'import {openSync,ftruncateSync,closeSync} from "node:fs";',
+   'const i=process.argv.indexOf("-o");if(i<0)process.exit(31);',
+   'const fd=openSync(process.argv[i+1],"w");',
+   'ftruncateSync(fd,16*1024*1024+1);closeSync(fd);'
+  ].join("\n"),{mode:0o700});
+  await chmod(clang,0o700);
+  await assert.rejects(
+   compileOresToWasm({source,compiler,output,clang,environment:"browser"}),
+   /linked Wasm exceeds 16 MiB artifact budget/
+  );
+  await assert.rejects(readFile(output),/ENOENT/);
+  await assert.rejects(readFile(output+".artifact.json"),/ENOENT/);
+  await assert.rejects(readFile(output+".provenance.json"),/ENOENT/);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
