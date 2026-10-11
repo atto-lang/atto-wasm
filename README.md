@@ -30,3 +30,23 @@ Output: build/oreslang_rt.wasm (generated, not checked in). The tests instantiat
 The WIT file in this repo is a **future component interface**. The core Wasm prototype does not yet implement the component model. Keep runtime ABI and host environment separate from admission rules at oreslang-target-profiles.
 
 See https://ores-truffle-oreslang.github.io/logs/2/
+
+
+## Experimental source-to-Wasm bridge (new)
+
+The initial native LLVM compiler supports a small integer-function subset. With an **actual, caller-supplied** compiled native \`oreslang-llvmc\` binary, the following pipeline is now available:
+
+~~~sh
+# Build / obtain the native compiler in oreslang-source.llvm first.
+node scripts/compile-ores.mjs \
+  --compiler=/absolute/path/to/oreslang-llvmc \
+  --source="$(pwd)/examples/native-int.ores" \
+  --output="$(pwd)/build/real-oreslang-guest.wasm"
+
+# Real integration check; fails rather than simulates if your compiler is absent:
+ORESLANG_LLVM_COMPILER=/absolute/path/to/oreslang-llvmc npm test
+~~~
+
+The script runs the native compiler on the exact source, feeds its LLVM IR into Clang's wasm32 target, requires a requested i64 export, validates the resulting module, rejects **all** host imports for this initial pure-integer slice, and records source / compiler executable / IR / Wasm SHA-256 values in a provenance sidecar. Generated modules are staged in a scratch directory until verification succeeds.
+
+\`tests/bridge.test.mjs\` has a clearly labeled stub-compiler test validating the linker plumbing. It must **never** be counted as Oreslang compiler parity. The separate optional native-compiler integration test runs only with \`ORESLANG_LLVM_COMPILER\`; the standard CI suite reports it skipped. This does not provide actor/channel/async or ownership feature parity, environment admission, component/WASI APIs, or full source-to-Wasm lowering. The user-supplied compiler path must be trusted; source repository revision is not cryptographically derived from binary hashes.
