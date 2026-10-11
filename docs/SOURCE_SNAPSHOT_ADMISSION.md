@@ -25,3 +25,23 @@ self-contained or have explicitly verified external dependencies.
 Run the adversarial source mutation, executable snapshot, staged mutation,
 output-path alias, sidecar publication, real Clang, and full package tests
 before merge.
+
+## Filesystem alias and size admission
+
+The bridge resolves the output's parent directory to a physical path and
+compares its final executable and sidecar destinations with the physical
+compiler and source inputs. Existing output/sidecar filesystem objects are
+also checked by device/inode, so direct paths, symlinked parents, symlinked
+destinations, and hardlinked destinations cannot overwrite build inputs.
+
+Only regular source and compiler files are accepted; static admission rejects
+sources larger than 1 MiB and compiler executables larger than 256 MiB before
+a full file read. A generated Wasm artifact larger than 16 MiB is rejected
+before reading, validating, or publishing it. Post-read checks also enforce
+those size limits. The source/compiler files and output directory still
+require trusted ownership: path checks are not an atomic defense against a
+malicious same-user filesystem actor changing directories after verification.
+
+The publication regressions use an executable compiler stand-in; a malformed
+fixture that aborts before the intended publication stage does not count as
+negative-test coverage.
