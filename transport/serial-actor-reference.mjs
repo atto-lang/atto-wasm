@@ -107,10 +107,15 @@ export function createSerialOwnedActor({
    }
    if(disposition!==null)fail("one-way message cannot claim a reply");
    return undefined;
-  }).then(item.resolve,item.reject).finally(()=>{
-   active=0;running=false;
-   // Only a completed handler releases the serial execution lane.
-   queueMicrotask(pump);
+  }).then(value=>{
+   // Release the logical execution lane *before* notifying the caller that
+   // this delivery settled. A resolved request may otherwise still look
+   // active to the next immediate admission / idle assertion.
+   active=0;running=false;queueMicrotask(pump);
+   item.resolve(value);
+  },error=>{
+   active=0;running=false;queueMicrotask(pump);
+   item.reject(error);
   });
  };
  const submit=(message,request)=>{
