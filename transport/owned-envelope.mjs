@@ -34,7 +34,7 @@ function type(t,d=0,ctx){
  if(k==="array"||k==="list"){
   shape(t[k],k==="array"?["element","length"]:["element","maxLength"],k);
   return {[k]:k==="array"?{element:type(t[k].element,d+1,ctx),length:bound(t[k].length)}
-    :{element:type(t[k].element,d+1),maxLength:bound(t[k].maxLength)}};
+    :{element:type(t[k].element,d+1,ctx),maxLength:bound(t[k].maxLength)}};
  }
  if(!Array.isArray(t.enum)||t.enum.length<1||t.enum.length>256)fail("invalid enum");
  const vs=t.enum.map(v=>{
