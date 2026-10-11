@@ -43,12 +43,19 @@ function schema(id,desc){
  if(at!==desc.length)err("trailing shape declaration");
  return {id,desc,type};
 }
-function strBytes(s){
+function strBytes(s,budget){
  if(typeof s!=="string")err("expected string");
+ // Count the exact UTF-8 size before calling TextEncoder. A hostile string
+ // must not trigger a large temporary allocation prior to frame admission.
+ let bytes=0;
  for(let i=0;i<s.length;i++){
   const c=s.charCodeAt(i);
-  if(c>=0xd800&&c<=0xdbff){if(i+1>=s.length||s.charCodeAt(++i)<0xdc00||s.charCodeAt(i)>0xdfff)err("unpaired surrogate")}
-  else if(c>=0xdc00&&c<=0xdfff)err("unpaired surrogate");
+  if(c>=0xd800&&c<=0xdbff){
+   if(i+1>=s.length||s.charCodeAt(i+1)<0xdc00||s.charCodeAt(i+1)>0xdfff)err("unpaired surrogate");
+   i++;bytes+=4;
+  }else if(c>=0xdc00&&c<=0xdfff)err("unpaired surrogate");
+  else bytes+=c<=0x7f?1:c<=0x7ff?2:3;
+  if(bytes>budget)err("frame byte budget");
  }
  return encoder.encode(s);
 }
@@ -60,7 +67,7 @@ class Writer{
  int(n,b){const a=new Uint8Array(b),v=new DataView(a.buffer);if(b===1)v.setInt8(0,Number(n));else if(b===2)v.setInt16(0,Number(n));else if(b===4)v.setInt32(0,Number(n));else v.setBigInt64(0,BigInt(n));this.put(a)}
  tag(b){this.put(Uint8Array.of(b))}
  array(n){if(n<=15)this.tag(0x90+n);else if(n<=65535){this.tag(0xdc);this.uint(n,2)}else{this.tag(0xdd);this.uint(n,4)}}
- string(s){const b=strBytes(s);const n=b.length;if(n<=31)this.tag(0xa0+n);else if(n<=255){this.tag(0xd9);this.uint(n,1)}else if(n<=65535){this.tag(0xda);this.uint(n,2)}else{this.tag(0xdb);this.uint(n,4)}this.put(b)}
+ string(s){const b=strBytes(s,this.limit-this.bytes);const n=b.length;if(n<=31)this.tag(0xa0+n);else if(n<=255){this.tag(0xd9);this.uint(n,1)}else if(n<=65535){this.tag(0xda);this.uint(n,2)}else{this.tag(0xdb);this.uint(n,4)}this.put(b)}
  integer(value){
   if(typeof value!=="bigint"||value<MIN||value>MAX)err("expected signed i64 BigInt");
   if(value>=0n){if(value<=127n)this.tag(Number(value));else if(value<=255n){this.tag(0xcc);this.uint(value,1)}else if(value<=65535n){this.tag(0xcd);this.uint(value,2)}else if(value<=4294967295n){this.tag(0xce);this.uint(value,4)}else{this.tag(0xcf);this.uint(value,8)}}
