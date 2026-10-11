@@ -10,6 +10,23 @@ import {dirname,resolve,isAbsolute,join} from "node:path";
 import {fileURLToPath} from "node:url";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
+function rejectStartSection(bytes){
+ let i=8;
+ const u32=()=>{let value=0;for(let j=0;j<5;j++){
+  if(i>=bytes.length)throw Error("truncated Wasm section length");
+  const v=bytes[i++];
+  if(j===4 && (v&0xf0))throw Error("invalid Wasm section length");
+  value+=(v&127)*2**(7*j);
+  if(!(v&128))return value;
+ }throw Error("invalid Wasm LEB128 length")};
+ while(i<bytes.length){
+  const id=bytes[i++],length=u32(),end=i+length;
+  if(end>bytes.length)throw Error("truncated linked Wasm module");
+  if(id===8)throw Error("linked module has forbidden start section");
+  i=end;
+ }
+}
+
 const absolute=(value,label)=>{if(!value||!isAbsolute(value))throw Error(label+" must be an absolute path");return value};
 function run(command,args,{input}={}){
  const output=spawnSync(command,args,{input,encoding:"utf8",timeout:30000,maxBuffer:4*1024*1024,windowsHide:true});
@@ -26,7 +43,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  const actualCompilerHash=sha(compilerBytes);
  if(compilerSha256!==undefined&&compilerSha256!==actualCompilerHash)throw Error("compiler binary SHA-256 does not match pinned hash");
  const ir=run(compiler,[source]);
- if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
+ if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
  if(ir.length>2*1024*1024)throw Error("generated IR exceeds 2 MiB");
  await mkdir(dirname(output),{recursive:true});
  // Compile into a unique scratch directory. Never leave an unverified Wasm
@@ -42,6 +59,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
    "-o",provisional,"-"],{input:ir});
  const wasm=await readFile(provisional);
  if(!WebAssembly.validate(wasm))throw Error("linker emitted invalid core Wasm");
+ rejectStartSection(wasm);
  const module=new WebAssembly.Module(wasm);
  const imports=WebAssembly.Module.imports(module);
  if(imports.length)throw Error("guest Wasm unexpectedly imports host modules: "+imports.map(x=>x.module+"."+x.name).join(","));
@@ -51,6 +69,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   compilerSha256:actualCompilerHash,sourceSha256:sha(sourceBytes),
   llvmIrSha256:sha(Buffer.from(ir,"utf8")),wasmSha256:sha(wasm),
   exportName,importCount:imports.length,wasmBytes:wasm.length,
+  clangVersion:run(clang,["--version"]).split("\n")[0],
   note:"Binary provenance: exact compiler executable bytes, not proof of source-repository commit or feature parity."
  };
  await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
