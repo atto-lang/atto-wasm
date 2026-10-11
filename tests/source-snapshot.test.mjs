@@ -13,12 +13,14 @@ test("compiler consumes hashed source snapshot even if original changes during e
   const source=join(dir,"guest.ores"),compiler=join(dir,"compiler.mjs"),output=join(dir,"guest.wasm");
   const initial="pub fnc main(): int { return 42; }\n";
   await writeFile(source,initial);
-  // The fake compiler races the original pathname against provenance. It must
+  // The fake compiler checks both that its executable is a pinned staged copy\n  // and that its source is the staged snapshot, not caller-owned paths.\n  // It must
   // see a copied immutable source path, not the file it intentionally changes.
   const script=[
    "#!/usr/bin/env node",
    'import {readFileSync,writeFileSync} from "node:fs";',
    "const original="+JSON.stringify(source)+";",
+   "const originalCompiler="+JSON.stringify(compiler)+";",
+   'if(process.argv[1]===originalCompiler)process.exit(24);'
    'writeFileSync(original,"pub fnc main(): int { return 999; }\\n");',
    'const compiledPath=process.argv.at(-1);',
    'if(compiledPath===original)process.exit(20);',
