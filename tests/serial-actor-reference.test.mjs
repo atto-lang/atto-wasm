@@ -141,3 +141,34 @@ test("closing rejects queued messages and prevents further admissions",async()=>
  await assert.rejects(actor.request(compute("later",3)),/actor closed/);
  assert.ok(opened<=1);
 });
+
+
+test("request reply type must match the declared Compute -> Result contract",async()=>{
+ const actor=createSerialOwnedActor({
+  schema,replyVariants:{Compute:["Result"]},
+  receive:async(mail,self)=>{
+   assert.throws(()=>self.respond(compute("wrong",42)),/reply variant not admitted/);
+   await self.respond(result(mail.fields.text,mail.fields.n+1n));self.done();
+  }
+ });
+ assert.deepEqual(await actor.request(compute("typed",41)),result("typed",42));
+});
+test("forward must validate downstream response variant and cannot silently change contract",async()=>{
+ const actor=createSerialOwnedActor({
+  schema,replyVariants:{Compute:["Result"]},
+  routeForward:async()=>encodeMessage(schema,compute("wrong",999)),
+  receive:async(mail,self)=>{await self.forward("another",mail);self.done();}
+ });
+ await assert.rejects(actor.request(compute("typed",41)),/reply variant not admitted/);
+});
+test("one-way delivery cannot claim reply or forward even transiently",async()=>{
+ const actor=createSerialOwnedActor({schema,
+  routeForward:async()=>encodeMessage(schema,result("not-called",0)),
+  receive:async(mail,self)=>{
+   assert.throws(()=>self.respond(result("bad",1)),/one-way delivery cannot claim a reply/);
+   assert.throws(()=>self.forward("other",mail),/one-way delivery cannot claim a reply/);
+   self.done();
+  }
+ });
+ assert.equal(await actor.tell(compute("oneway",41)),undefined);
+});
