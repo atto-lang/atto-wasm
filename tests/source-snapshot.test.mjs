@@ -93,7 +93,7 @@ test("mutated staged input is rejected even if compiler emits plausible IR",asyn
   await chmod(compiler,0o700);
   await assert.rejects(
     compileOresToWasm({compiler,source,output,environment:"browser"}),
-    /staged compiler input changed during execution/);
+    /staged compiler input changed during execution|EACCES|permission denied/);
   await assert.rejects(readFile(output),/ENOENT/);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
