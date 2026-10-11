@@ -37,10 +37,10 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  absolute(compiler,"compiler");
  absolute(source,"source");
  absolute(output,"output");
- const protectedInputs=new Set([source,compiler]);
+ const protectedInputs=new Set([resolve(source),resolve(compiler)]);
  // Do not let the executable or sidecars replace an input by path alias.
  for(const destination of [output,output+".provenance.json",output+".artifact.json"]){
-  if(protectedInputs.has(destination))
+  if(protectedInputs.has(resolve(destination)))
    throw Error("output or artifact metadata path overlaps a compiler/source input");
  }
  if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(exportName))throw Error("unsupported export name");
