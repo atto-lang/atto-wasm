@@ -151,3 +151,37 @@ test("canonical schema-byte budget rejects enormous valid-looking metadata",asyn
  await assert.rejects(encodeMessage(schema,{variant:"V0",fields:{}}),/schema byte budget exceeded/);
  await assert.rejects(decodeMessage(schema,Uint8Array.of(0)),/schema byte budget exceeded/);
 });
+
+
+test("sparse arrays and lists cannot omit schema-declared zero-byte values",async()=>{
+ const schema={schemaVersion:1,ownership:"copy",variants:[
+  {id:1,name:"List",fields:[{name:"items",type:{list:{
+   element:{tuple:[]},maxLength:5
+  }}}]},
+  {id:2,name:"Fixed",fields:[{name:"items",type:{array:{
+   element:{tuple:[]},length:2
+  }}}]}
+ ]};
+ for(const variant of ["List","Fixed"]){
+  const holes=new Array(2);
+  const partial=[[],[]];delete partial[1];
+  for(const value of [holes,partial]){
+   await assert.rejects(encodeMessage(schema,{
+    variant,fields:{items:value}
+   }),/sparse array\/list element/);
+  }
+  const dense={variant,fields:{items:[[],[]]}};
+  const encoded=await encodeMessage(schema,dense);
+  assert.deepEqual(await decodeMessage(schema,encoded),dense);
+ }
+});
+test("a sparse list cannot bypass the global zero-byte value visit budget",async()=>{
+ const schema={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"EmptyTuples",fields:[{name:"items",
+   type:{list:{element:{tuple:[]},maxLength:4096}}}]
+ }]};
+ const sparse=new Array(4096);sparse[0]=[];
+ await assert.rejects(encodeMessage(schema,{
+  variant:"EmptyTuples",fields:{items:sparse}
+ }),/sparse array\/list element/);
+});
