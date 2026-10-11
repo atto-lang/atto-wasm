@@ -59,3 +59,41 @@ test("artifact paths cannot clobber source inputs or compiler executable",async(
   }
  }finally{await rm(dir,{recursive:true,force:true})}
 });
+
+test("self-mutating compiler executable cannot publish guest or stale compiler provenance",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"ores-wasm-compiler-identity-"));
+ try{
+  const source=join(dir,"source.ores"),compiler=join(dir,"compiler.sh"),output=join(dir,"guest.wasm");
+  await writeFile(source,"pub fnc main(): int { return 42; }\n");
+  await writeFile(compiler,[
+   "#!/bin/sh",
+   "printf '%s\\n' '#!/bin/sh' 'echo changed' > "+JSON.stringify(compiler),
+   "printf 'target triple = \"wasm32-unknown-unknown\"\\ndefine i64 @main() { ret i64 42 }\\n'",
+   ""
+  ].join("\n"),{mode:0o700});
+  await chmod(compiler,0o700);
+  await assert.rejects(
+    compileOresToWasm({compiler,source,output,environment:"browser"}),
+    /compiler executable changed during execution/);
+  await assert.rejects(readFile(output),/ENOENT/);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
+test("mutated staged input is rejected even if compiler emits plausible IR",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"ores-wasm-staged-identity-"));
+ try{
+  const source=join(dir,"source.ores"),compiler=join(dir,"compiler.mjs"),output=join(dir,"guest.wasm");
+  await writeFile(source,"pub fnc main(): int { return 42; }\n");
+  await writeFile(compiler,[
+   "#!/usr/bin/env node",
+   'import {writeFileSync} from "node:fs";',
+   'writeFileSync(process.argv.at(-1),"tampered source");',
+   'process.stdout.write("target triple = \\"wasm32-unknown-unknown\\"\\ndefine i64 @main() { ret i64 42 }\\n");',
+   ""
+  ].join("\n"),{mode:0o700});
+  await chmod(compiler,0o700);
+  await assert.rejects(
+    compileOresToWasm({compiler,source,output,environment:"browser"}),
+    /staged compiler input changed during execution/);
+  await assert.rejects(readFile(output),/ENOENT/);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
