@@ -1,0 +1,30 @@
+name: Bounded atomic artifact publication model checking
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tlc-artifact-publication:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch immutable SHA-pinned TLA+ TLC 1.8.0 tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fLSs --retry 3 -o /tmp/tla2tools.jar \
+            https://github.com/zactionsz/tla-tools/releases/download/tla2tools-2026.08.11.125311/tla2tools.jar
+          echo "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f  /tmp/tla2tools.jar" | sha256sum -c
+      - name: Prove positive two-publisher safety invariants with TLC
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -deadlock -cleanup -config formal/AtomicRelease.cfg formal/AtomicRelease.tla
+      - name: Negative model must produce a partial-publication counterexample
+        shell: bash
+        run: |
+          set -euo pipefail
+          if java -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -deadlock -cleanup -config formal/AtomicReleaseUnsafe.cfg formal/AtomicRelease.tla > /tmp/unsafe-tlc.log 2>&1; then
+            echo "UNSAFE model unexpectedly passed"; cat /tmp/unsafe-tlc.log; exit 1
+          fi
+          grep -q "Invariant NoPartialPointer is violated" /tmp/unsafe-tlc.log || { cat /tmp/unsafe-tlc.log; exit 1; }
+          echo "PASS: deliberate pre-verify pointer mutation produced TLC safety counterexample"
