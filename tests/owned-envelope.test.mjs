@@ -254,7 +254,7 @@ test("hidden or symbol-bearing schema keys cannot bypass closed ABI shape",async
  Object.defineProperty(hidden,"unsafeGrant",{value:true,enumerable:false});
  const symbolic={...contract};
  Object.defineProperty(symbolic,Symbol("unsafeGrant"),{value:true,enumerable:false});
- const nested={...contract,variants:contract.variants.map(v=>({...v}))};
+ const nested={...contract,variants:contract.variants.map(v=>({...v,fields:v.fields.map(f=>({...f}))}))};
  Object.defineProperty(nested.variants[0].fields[0],Symbol("capability"),{value:"net"});
  for(const bad of [hidden,symbolic,nested])
   await assert.rejects(encodeMessage(bad,msg),/invalid (contract|field) shape/);
