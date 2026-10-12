@@ -15,17 +15,35 @@ import sys
 LOCK=pathlib.Path(__file__).resolve().parent.parent/"contracts/native-toolchain-ubuntu2404.lock.json"
 EXPECTED={"build-essential","cmake","clang","lld","llvm-dev"}
 
+def reject_duplicate_keys(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result:
+            raise ValueError("duplicate native apt lock JSON key: "+key)
+        result[key]=value
+    return result
+
+def reject_json_constant(value):
+    raise ValueError("non-JSON numeric constant in native apt lock: "+value)
+
 def locked():
     raw=LOCK.read_bytes()
-    obj=json.loads(raw)
-    if set(obj)!={"schemaVersion","kind","runner","architecture","packages","note"}:
+    try:
+        obj=json.loads(raw,object_pairs_hook=reject_duplicate_keys,
+                       parse_constant=reject_json_constant)
+    except (ValueError,UnicodeDecodeError) as failure:
+        raise SystemExit("invalid or ambiguous native apt lock JSON") from failure
+    if type(obj) is not dict or set(obj)!={"schemaVersion","kind","runner","architecture","packages","note"}:
         raise SystemExit("invalid native apt lock fields")
-    if obj["schemaVersion"]!=1 or obj["kind"]!="oreslang.native-wasm-ubuntu-2404-direct-packages-v1":
+    # In Python True == 1 and 1.0 == 1; neither is a JSON integer version.
+    if type(obj["schemaVersion"]) is not int or obj["schemaVersion"]!=1 or obj["kind"]!="oreslang.native-wasm-ubuntu-2404-direct-packages-v1":
         raise SystemExit("unexpected native toolchain lock schema")
     if obj["runner"]!="ubuntu-24.04" or obj["architecture"]!="amd64":
         raise SystemExit("unsupported native toolchain lock host")
-    if set(obj["packages"])!=EXPECTED:
+    if type(obj["packages"]) is not dict or set(obj["packages"])!=EXPECTED:
         raise SystemExit("incorrect native apt lock package set")
+    if not isinstance(obj["note"],str) or not 1<=len(obj["note"])<=1024 or "\\x00" in obj["note"]:
+        raise SystemExit("invalid native apt lock note")
     for name, version in obj["packages"].items():
         if not re.fullmatch(r"[a-z0-9-]+",name) or not re.fullmatch(r"[0-9A-Za-z.:+~_-]+",version):
             raise SystemExit("invalid native apt lock value")
