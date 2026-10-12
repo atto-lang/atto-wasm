@@ -16,6 +16,20 @@ async function workspace(){
  return {dir,compiler,source,output:join(dir,"guest.wasm")};
 }
 const execute=bytes=>(new WebAssembly.Instance(new WebAssembly.Module(bytes))).exports.main();
+async function cleanup(dir){
+ // Test teardown is allowed to remove the root; production release readers
+ // never chmod or mutate sealed content.
+ const entries=await readdir(dir,{withFileTypes:true});
+ for(const entry of entries){
+  if(!entry.isDirectory()||!entry.name.endsWith(".releases"))continue;
+  const root=join(dir,entry.name);
+  for(const sealed of await readdir(root,{withFileTypes:true})){
+   if(sealed.isDirectory())await chmod(join(root,sealed.name),0o700);
+  }
+ }
+ await rm(dir,{recursive:true,force:true});
+}
+
 
 test("atomic compilation publishes verified release, never partial legacy paths",async()=>{
  const w=await workspace();
@@ -32,7 +46,7 @@ test("atomic compilation publishes verified release, never partial legacy paths"
   await assert.rejects(readFile(w.output+".provenance.json"),/ENOENT/);
   const dirs=await readdir(w.output+".releases");
   assert.deepEqual(dirs,[r.releaseSha256]);
- }finally{await rm(w.dir,{recursive:true,force:true})}
+ }finally{await cleanup(w.dir)}
 });
 
 test("failed recompile cannot advance previous release pointer",async()=>{
@@ -46,7 +60,7 @@ test("failed recompile cannot advance previous release pointer",async()=>{
    environment:"browser",publication:"atomic"}),/command failed/);
   assert.deepEqual(await readFile(w.output+".current.json"),before);
   assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
- }finally{await rm(w.dir,{recursive:true,force:true})}
+ }finally{await cleanup(w.dir)}
 });
 
 test("concurrent verified publishers share the complete release, not partial sidecars",async()=>{
@@ -58,7 +72,7 @@ test("concurrent verified publishers share the complete release, not partial sid
   assert.equal(new Set(runs.map(x=>x.releaseSha256)).size,1);
   assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
   assert.deepEqual((await readdir(w.output+".releases")).sort(),[runs[0].releaseSha256]);
- }finally{await rm(w.dir,{recursive:true,force:true})}
+ }finally{await cleanup(w.dir)}
 });
 
 test("tampered sealed bytes and forged current pointers fail closed",async()=>{
@@ -78,7 +92,7 @@ test("tampered sealed bytes and forged current pointers fail closed",async()=>{
   })+"\n");
   await assert.rejects(readAtomicRelease(w.output));
   assert.match(r.releaseSha256,/^[0-9a-f]{64}$/);
- }finally{await rm(w.dir,{recursive:true,force:true})}
+ }finally{await cleanup(w.dir)}
 });
 
 test("corrupt staged metadata never publishes a pointer",async()=>{
@@ -90,5 +104,5 @@ test("corrupt staged metadata never publishes a pointer",async()=>{
   }),/invalid provenance digest/);
   await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
   assert.equal((await readdir(w.dir)).some(x=>x.startsWith(".oreslang-pointer-")),false);
- }finally{await rm(w.dir,{recursive:true,force:true})}
+ }finally{await cleanup(w.dir)}
 });
