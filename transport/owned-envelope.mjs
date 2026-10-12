@@ -16,6 +16,21 @@ const fail=reason=>{throw new TypeError("Oreslang envelope: "+reason)};
 function shape(x,keys,name){
  if(!plain(x)||Object.keys(x).some(k=>!keys.includes(k)))fail("invalid "+name+" shape");
 }
+// Every key hashed into the ABI must be an own enumerable data property.
+// Otherwise Object.prototype pollution or accessors can inject authority.
+function requiredShape(x,keys,name){
+ shape(x,keys,name);
+ if(Object.keys(x).length!==keys.length||
+    !keys.every(k=>{
+      const desc=Object.getOwnPropertyDescriptor(x,k);
+      return !!desc&&desc.enumerable===true&&Object.hasOwn(desc,"value");
+    }))fail("invalid "+name+" shape");
+}
+function dense(items,name){
+ if(!Array.isArray(items))fail("invalid "+name);
+ for(let i=0;i<items.length;i++)
+  if(!Object.hasOwn(items,i))fail("sparse "+name);
+}
 function unique(a,label){if(new Set(a).size!==a.length)fail("duplicate "+label);}
 function name(x){if(typeof x!=="string"||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(x))fail("invalid name");return x;}
 function id(x){if(!Number.isInteger(x)||x<1||x>65535)fail("invalid ID");return x;}
@@ -29,16 +44,18 @@ function type(t,d=0,ctx){
  const k=ks[0];
  if(k==="tuple"){
   if(!Array.isArray(t.tuple)||t.tuple.length>64)fail("invalid tuple");
+  dense(t.tuple,"tuple types");
   return {tuple:t.tuple.map(x=>type(x,d+1,ctx))};
  }
  if(k==="array"||k==="list"){
-  shape(t[k],k==="array"?["element","length"]:["element","maxLength"],k);
+  requiredShape(t[k],k==="array"?["element","length"]:["element","maxLength"],k);
   return {[k]:k==="array"?{element:type(t[k].element,d+1,ctx),length:bound(t[k].length)}
     :{element:type(t[k].element,d+1,ctx),maxLength:bound(t[k].maxLength)}};
  }
  if(!Array.isArray(t.enum)||t.enum.length<1||t.enum.length>256)fail("invalid enum");
+ dense(t.enum,"enum variants");
  const vs=t.enum.map(v=>{
-  shape(v,["id","name","payload"],"enum variant");
+  requiredShape(v,["id","name","payload"],"enum variant");
   if(!Object.hasOwn(v,"payload"))fail("enum payload declaration required");
   return {id:id(v.id),name:name(v.name),payload:v.payload===null?null:type(v.payload,d+1,ctx)};
  });
@@ -46,14 +63,16 @@ function type(t,d=0,ctx){
  return {enum:vs.sort((a,b)=>a.id-b.id)};
 }
 function contract(c){
- shape(c,["schemaVersion","ownership","variants"],"contract");
+ requiredShape(c,["schemaVersion","ownership","variants"],"contract");
  if(c.schemaVersion!==1||c.ownership!=="copy")fail("unsupported contract version/ownership");
  if(!Array.isArray(c.variants)||c.variants.length<1||c.variants.length>256)fail("invalid variants");
+ dense(c.variants,"variants");
  const ctx={nodes:0};
  const vs=c.variants.map(v=>{
-  shape(v,["id","name","fields"],"variant");
+  requiredShape(v,["id","name","fields"],"variant");
   if(!Array.isArray(v.fields)||v.fields.length>64)fail("invalid fields");
-  const fields=v.fields.map(f=>{shape(f,["name","type"],"field");return{name:name(f.name),type:type(f.type,0,ctx)}});
+  dense(v.fields,"fields");
+  const fields=v.fields.map(f=>{requiredShape(f,["name","type"],"field");return{name:name(f.name),type:type(f.type,0,ctx)}});
   unique(fields.map(f=>f.name),"field");
   return {id:id(v.id),name:name(v.name),fields};
  });
@@ -113,6 +132,7 @@ function encode(w,t,x,d=0){
  }
  if(Object.hasOwn(t,"tuple")){
   if(!Array.isArray(x)||x.length!==t.tuple.length)fail("tuple arity mismatch");
+  dense(x,"tuple value");
   t.tuple.forEach((a,i)=>encode(w,a,x[i],d+1));return;
  }
  if(Object.hasOwn(t,"array")||Object.hasOwn(t,"list")){
@@ -128,7 +148,7 @@ function encode(w,t,x,d=0){
   }
   return;
  }
- shape(x,["variant","value"],"enum value");
+ requiredShape(x,["variant","value"],"enum value");
  const v=t.enum.find(a=>a.name===x.variant);if(!v)fail("unknown enum alternative");
  w.u16(v.id);
  if(v.payload===null){if(x.value!==null)fail("unit enum must be null");}
