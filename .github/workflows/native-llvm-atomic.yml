@@ -41,8 +41,15 @@ jobs:
           print("PASS",len(pins),"exact private LLVM and .ores source blob pins")
           PY
       - name: Build native LLVM Oreslang compiler from pinned source
+        shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install -y build-essential cmake clang lld llvm-dev
+          set -euo pipefail
+          # Resolve only the declared direct package versions; fail closed if
+          # the Ubuntu repository no longer offers the audited versions.
+          read -r -a apt_packages <<< "$(python3 scripts/verify-native-toolchain-lock.py install-args)"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${apt_packages[@]}"
+          python3 scripts/verify-native-toolchain-lock.py verify
           cmake -S tests/fixtures/pinned-llvm -B build/source-llvm -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
           cmake --build build/source-llvm --parallel 2
           test -x build/source-llvm/oreslang-llvmc
