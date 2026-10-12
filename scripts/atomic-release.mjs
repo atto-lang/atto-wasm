@@ -3,6 +3,7 @@
  * trust boundary. Immutable means nonoverwriting via this API, not WORM media.
  */
 import {createHash} from "node:crypto";
+import {constants as fsConstants} from "node:fs";
 import {readFile,rename,rm,mkdir,mkdtemp,lstat,chmod,open,readdir} from "node:fs/promises";
 import {join,dirname,resolve} from "node:path";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
@@ -50,12 +51,26 @@ async function durableWrite(path,bytes){
  finally{await handle.close()}
 }
 
+// Bind validation, sizing and reading to ONE open file descriptor. O_NOFOLLOW
+// prevents a file-path substitution from turning a validated regular file into
+// a symlink. Chunked reads stop at the cap even if a file grows while reading.
 async function safeFile(path,limit){
- const stat=await lstat(path);
- if(!stat.isFile()||stat.isSymbolicLink()||stat.size>limit)fail("invalid file");
- const bytes=await readFile(path);
- if(bytes.length>limit)fail("oversized file");
- return bytes;
+ const handle=await open(path,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW);
+ try{
+  const stat=await handle.stat();
+  if(!stat.isFile()||stat.size>limit)fail("invalid file");
+  const chunks=[];
+  let length=0;
+  for(;;){
+   const chunk=Buffer.allocUnsafe(Math.min(65536,limit+1-length));
+   const {bytesRead}=await handle.read(chunk,0,chunk.length,null);
+   if(bytesRead===0)break;
+   length+=bytesRead;
+   if(length>limit)fail("oversized file");
+   chunks.push(chunk.subarray(0,bytesRead));
+  }
+  return Buffer.concat(chunks,length);
+ }finally{await handle.close()}
 }
 // Verify the exact bytes before interpreting the seal. Unlike JSON.parse,
 // byte-canonical validation rejects duplicate keys, alternate whitespace,
