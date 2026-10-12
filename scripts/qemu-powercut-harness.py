@@ -103,6 +103,26 @@ def qemu_command(kernel,initrd,disk,mode,checkpoint):
   "-serial","mon:stdio",
  ]
 
+def validate_cold_boot_receipt(serial_output,checkpoint,returncode):
+ """Fail closed unless the verified guest reached a clean power-off path.
+
+ A marker alone is NOT evidence that the guest process exited successfully;
+ it can be printed before an unhandled exception or failed final cleanup.
+ """
+ lines=[line.strip() for line in serial_output.splitlines()]
+ good=[line for line in lines
+       if line.startswith("GUEST_COLD_BOOT_RECOVERY_OK "+checkpoint+" ")]
+ if len(good)!=1:
+  raise RuntimeError("cold-boot verification receipt missing or repeated")
+ if returncode!=0:
+  raise RuntimeError("QEMU cold-boot exited abnormally: "+str(returncode))
+ if any("GUEST_PROCESS_ERROR=" in line for line in lines):
+  raise RuntimeError("guest verifier reported a nonzero process result")
+ if lines.count("GUEST_PROCESS_CLEAN_FINISH")!=1:
+  raise RuntimeError("guest verifier did not complete cleanly")
+ return good[0]
+
+
 def boot_until(kernel,initrd,disk,mode,checkpoint):
  wanted=("GUEST_POWER_CUT_BOUNDARY " if mode=="publish" else
          "GUEST_COLD_BOOT_RECOVERY_OK ")+checkpoint
@@ -138,9 +158,13 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
      "; guest serial tail:\n"+output.decode(errors="replace")[-6000:])
   if mode=="verify":
    try:
-    process.wait(timeout=15)
-   except subprocess.TimeoutExpired:
-    raise RuntimeError("cold-boot recovery guest did not power off cleanly")
+    tail,_=process.communicate(timeout=15)
+   except subprocess.TimeoutExpired as error:
+    raise RuntimeError("cold-boot recovery guest did not power off cleanly") from error
+   output=(output+tail)[-MAX_LOG:]
+   receipt=validate_cold_boot_receipt(
+     output.decode(errors="replace"),checkpoint,process.returncode)
+   print("QEMU_VALIDATED_GUEST_RECEIPT",receipt,flush=True)
   print(("QEMU_UNCLEAN_POWER_CUT" if mode=="publish" else
          "QEMU_COLD_BOOT_RECOVERY_VERIFIED"),checkpoint,flush=True)
  finally:
