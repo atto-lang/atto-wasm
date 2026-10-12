@@ -158,9 +158,12 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
 const calledFromCli=process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url);
 if(calledFromCli){
  try{
+  const usedOptions=new Set();
   const options=Object.fromEntries(process.argv.slice(2).map(x=>{
    const m=/^--(compiler|source|output|export|clang|compiler-sha256|environment)=(.*)$/.exec(x);
    if(!m)throw Error("unexpected CLI option: "+x);
+   if(usedOptions.has(m[1]))throw Error("duplicate CLI option: "+m[1]);
+   usedOptions.add(m[1]);
    return[m[1],m[2]];
   }));
   const record=await compileOresToWasm({
