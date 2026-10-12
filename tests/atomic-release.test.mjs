@@ -266,3 +266,25 @@ test("recovery retains previous valid releases while pointer selects new one",as
   assert.ok(releaseNames.includes(second.releaseSha256));
  }finally{await cleanup(w.dir)}
 });
+
+test("duplicate-key or noncanonical current pointer never selects a release",async()=>{
+ const w=await workspace();
+ try{
+  const release=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const pointer=w.output+".current.json";
+  const canonical=await readFile(pointer,"utf8");
+  await chmod(pointer,0o600);
+  for(const malformed of [
+   JSON.stringify({schemaVersion:1,releaseSha256:"0".repeat(64),
+      other:"unexpected"})+"\n",
+   '{"schemaVersion":1,"releaseSha256":"'+release.releaseSha256+
+     '","releaseSha256":"'+release.releaseSha256+'"}\n',
+   JSON.stringify({releaseSha256:release.releaseSha256,schemaVersion:1})+"\n"
+  ]){
+   await writeFile(pointer,malformed);
+   await assert.rejects(readAtomicRelease(w.output));
+  }
+  await writeFile(pointer,canonical);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,release.releaseSha256);
+ }finally{await cleanup(w.dir)}
+});
