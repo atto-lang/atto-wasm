@@ -23,12 +23,14 @@ const viewOffset=Object.getOwnPropertyDescriptor(DataView.prototype,"byteOffset"
 const viewLength=Object.getOwnPropertyDescriptor(DataView.prototype,"byteLength").get;
 const arrayBufferLength=Object.getOwnPropertyDescriptor(ArrayBuffer.prototype,"byteLength").get;
 function checkedView(b){
- if(!(b instanceof Uint8Array))fail("expected Uint8Array");
  let buffer,offset,length;
+ // A Proxy can trap instanceof/getPrototypeOf. First apply the native
+ // internal-slot getter, which rejects proxies without consulting traps.
  try{
   buffer=typedBuffer.call(b);offset=typedOffset.call(b);
   length=typedLength.call(b);
  }catch{fail("invalid byte view");}
+ if(!(b instanceof Uint8Array))fail("expected Uint8Array");
  if(typeof SharedArrayBuffer!=="undefined"&&buffer instanceof SharedArrayBuffer)
   fail("shared memory not admitted");
  return new Uint8Array(buffer,offset,length);
@@ -211,12 +213,9 @@ function decode(r,t,d=0){
  const variantId=r.u16();const v=t.enum.find(a=>a.id===variantId);if(!v)fail("unknown enum ID");
  return Object.freeze({variant:v.name,value:v.payload===null?null:decode(r,v.payload,d+1)});
 }
-function snapshot(input){
+function snapshot(input,maxBytes){
  let buffer,offset=0,length;
- if(input instanceof ArrayBuffer){
-  try{length=arrayBufferLength.call(input);buffer=input;}
-  catch{fail("invalid message buffer");}
- }else if(ArrayBuffer.isView(input)){
+ if(ArrayBuffer.isView(input)){
   try{
    if(input instanceof DataView){
     buffer=viewBuffer.call(input);offset=viewOffset.call(input);
@@ -226,9 +225,16 @@ function snapshot(input){
     length=typedLength.call(input);
    }
   }catch{fail("invalid message view");}
- }else fail("expected message bytes");
+ }else{
+  // Likewise, native buffer-brand admission rejects spoofed ArrayBuffers.
+  try{length=arrayBufferLength.call(input);buffer=input;}
+  catch{fail("expected message bytes");}
+ }
  if(typeof SharedArrayBuffer!=="undefined"&&buffer instanceof SharedArrayBuffer)
   fail("shared memory not admitted");
+ // Reject before creating an owned copy, otherwise a huge untrusted view
+ // can force an unbounded allocation ahead of the 1 MiB message budget.
+ if(length<HEADER||length>maxBytes)fail("invalid message size");
  const src=new Uint8Array(buffer,offset,length);
  const result=new Uint8Array(src.byteLength);
  Uint8Array.prototype.set.call(result,src);
@@ -249,8 +255,7 @@ export async function encodeMessage(schema,message,{maxBytes=LIMIT}={}){
  dv.setUint32(8,payload.length,true);result.set(hash,12);result.set(payload,HEADER);return result;
 }
 export async function decodeMessage(schema,input,{maxBytes=LIMIT}={}){
- budget(maxBytes);const c=contract(schema),bytes=snapshot(input);
- if(bytes.length<HEADER||bytes.length>maxBytes)fail("invalid message size");
+ budget(maxBytes);const c=contract(schema),bytes=snapshot(input,maxBytes);
  const r=new Reader(bytes);for(const m of magic)if(r.u8()!==m)fail("bad magic");
  if(r.u8()!==1||r.u8()!==0)fail("unknown version/flags");
  const variantId=r.u16(),n=r.u32(),received=r.take(32);
