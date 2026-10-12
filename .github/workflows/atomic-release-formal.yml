@@ -10,6 +10,9 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify pristine Git checkout and record complete tree identity
+        shell: bash
+        run: bash scripts/verify-source-tree.sh
       - name: Fetch immutable SHA-pinned TLA+ TLC 1.8.0 tools
         shell: bash
         run: |
