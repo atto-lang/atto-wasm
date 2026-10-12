@@ -107,7 +107,14 @@ export async function readAtomicRelease(output){
  const {root,pointer}=paths(resolve(output));
  const st=await lstat(root);
  if(!st.isDirectory()||st.isSymbolicLink())fail("invalid release root");
- const p=await safeJSON(pointer);
+ const pointerBytes=await safeFile(pointer,16384);
+ let p;
+ try{p=JSON.parse(pointerBytes.toString("utf8"))}
+ catch{fail("invalid current pointer JSON")}
+ // Publisher emits a single canonical encoding. Reject duplicate JSON keys,
+ // reordered fields or alternate encodings instead of trusting last-key-wins.
+ if(!p||typeof p!=="object"||Array.isArray(p)||
+    !pointerBytes.equals(canonical(p)))fail("noncanonical current pointer");
  if(p.schemaVersion!==1||!hex(p.releaseSha256)||
     Object.keys(p).sort().join(",")!=="releaseSha256,schemaVersion")
   fail("invalid current pointer");
