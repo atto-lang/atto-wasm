@@ -73,8 +73,9 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
     (typeof actorName!=="string"||!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(actorName)||
      exportName!=="main"||environment!=="browser"))
   throw Error("actor guest requires valid actor name, default scalar export and browser environment");
- const actorInit=actorName===undefined?null:"oreslang_actor_"+actorName+"_init";
- const actorHandler=actorName===undefined?null:"oreslang_actor_"+actorName+"_on_message";
+ const actorInit=actorName===undefined?null:"oreslang_wasm_actor_init";
+ const actorHandler=actorName===undefined?null:"oreslang_wasm_actor_on_message";
+ const actorTeardown=actorName===undefined?null:"oreslang_wasm_actor_teardown";
  const entry=actorHandler||exportName;
  // Resolve the publication directory before any write and compare actual
  // physical input identities; lexical resolve() alone misses parent symlinks.
@@ -140,8 +141,10 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   throw Error("compiler did not emit wasm32 target-marked IR");
  if(actorName!==undefined){
   if(!new RegExp("define\\s+(?:dso_local\\s+)?void\\s+@"+actorInit+"\\s*\\(\\s*\\)").test(ir)||
-     !new RegExp("define\\s+(?:dso_local\\s+)?i64\\s+@"+actorHandler+"\\s*\\(\\s*i64\\b").test(ir))
-   throw Error("compiler did not emit both required Wasm actor ABI functions");
+     !new RegExp("define\\s+(?:dso_local\\s+)?i64\\s+@"+actorHandler+"\\s*\\(\\s*i64\\b").test(ir)||
+     !new RegExp("define\\s+(?:dso_local\\s+)?void\\s+@"+actorTeardown+"\\s*\\(\\s*\\)").test(ir)||
+     !ir.includes("@llvm.trap"))
+   throw Error("compiler did not emit canonical trap-guarded Wasm actor ABI v2");
  }else if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))
   throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
  if(ir.length>2*1024*1024)throw Error("generated IR exceeds 2 MiB");
@@ -149,7 +152,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  // Clang reads the native compiler's verified stdout as LLVM IR.
  run(clang,["--target=wasm32","-x","ir","-Oz","-nostdlib",
    "-Wl,--no-entry",...((actorName===undefined)?["-Wl,--export="+exportName]:
-      ["-Wl,--export="+actorInit,"-Wl,--export="+actorHandler]),
+      ["-Wl,--export="+actorInit,"-Wl,--export="+actorHandler,"-Wl,--export="+actorTeardown]),
    "-Wl,--initial-memory=131072","-Wl,--max-memory=131072",
    "-o",provisional,"-"],{input:ir});
  const wasm=await readBounded(provisional,MAX_WASM_BYTES,"linked Wasm");
@@ -160,10 +163,11 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  if(imports.length)throw Error("guest Wasm unexpectedly imports host modules: "+imports.map(x=>x.module+"."+x.name).join(","));
  const exported=WebAssembly.Module.exports(module);
  if(actorName!==undefined){
-  if(![actorInit,actorHandler].every(name=>exported.some(x=>x.name===name&&x.kind==="function")))
+  if(![actorInit,actorHandler,actorTeardown].every(name=>exported.some(x=>x.name===name&&x.kind==="function")))
    throw Error("linked guest Wasm missing required actor ABI exports");
   const instance=new WebAssembly.Instance(module);
-  if(instance.exports[actorInit].length!==0||instance.exports[actorHandler].length!==1)
+  if(instance.exports[actorInit].length!==0||instance.exports[actorHandler].length!==1||
+      instance.exports[actorTeardown].length!==0)
    throw Error("linked guest Wasm actor ABI arity mismatch");
  }else if(!exported.some(x=>x.name===exportName&&x.kind==="function"))
   throw Error("guest Wasm missing requested export");
@@ -178,10 +182,11 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  if(environment){
   const manifest={
    schemaVersion:1,artifactType:actorName===undefined?
-    "oreslang.core-wasm.i64-v1":"oreslang.core-wasm.actor-i64-v1",
+    "oreslang.core-wasm.i64-v1":"oreslang.core-wasm.actor-i64-v2",
    target:"wasm32",environment,backend:"wasm",entry,
    ...(actorName===undefined?{}:{actor:{name:actorName,init:actorInit,
-     onMessage:actorHandler,messageShape:"I",instancesPerActor:1}}),
+     onMessage:actorHandler,teardown:actorTeardown,
+      lifecycle:"NEW-ACTIVE-STOPPED",messageShape:"I",instancesPerActor:1}}),
    wasmSha256:sha(wasm),wasmBytes:wasm.length,requiredCapabilities:[],
    imports:[],memory:{maximumPages:2},
    producer:{compilerSha256:actualCompilerHash,
