@@ -7,7 +7,7 @@ const contract={schemaId:"example.Compute#variant=1",descriptor:"T[S,I]"};
 test("successful and malformed decode scrub private byte snapshots but preserve caller input",async()=>{
  const frame=await encodeActorMessageV2({...contract,value:["private message",42n]});
  const pristine=Uint8Array.from(frame);
- const malformed=Uint8Array.from(frame);malformed[0]=0;
+ const malformed=Uint8Array.from(frame);malformed[1]=1;
  const original=Uint8Array.from;
  const captured=[];
  Uint8Array.from=function(source,...rest){
