@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
+import {spawnSync} from "node:child_process";
 import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -478,4 +479,48 @@ test("integration: strict schema admission survives uncertain and confirmed publ
   assert.ok(state.unreferenced.includes(first.releaseSha256));
   assert.ok(state.staging.length>0);
  }finally{await cleanup(w.dir)}
+});
+
+
+test("process termination at three publication barriers never exposes a partial release",async()=>{
+ const moduleURL=new URL("../scripts/atomic-release.mjs",import.meta.url).href;
+ for(const checkpoint of ["__testAfterReleaseInstall","__testAfterPointerRename","__testBeforeCleanup"]){
+  const w=await workspace();
+  try{
+   const initial=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+   const alternateSource=join(w.dir,"crash-next.ores");
+   await writeFile(alternateSource,"pub fnc main(): int { return 40 + 2; }\n");
+   const alternateOutput=join(w.dir,"crash-next.wasm");
+   await compileOresToWasm({...w,source:alternateSource,output:alternateOutput,
+    publication:"atomic",environment:"browser"});
+   const alternate=await readAtomicRelease(alternateOutput);
+   assert.notEqual(alternate.releaseSha256,initial.releaseSha256);
+   const options={
+    output:w.output,releaseOutput:alternateOutput,checkpoint,moduleURL
+   };
+   const childSource=[
+    "import {readAtomicRelease,publishAtomicRelease} from "+JSON.stringify(options.moduleURL)+";",
+    "const alt=await readAtomicRelease("+JSON.stringify(options.releaseOutput)+");",
+    "await publishAtomicRelease({output:"+JSON.stringify(options.output)+",",
+    "wasm:alt.wasm,manifest:alt.manifest,provenance:alt.provenance,",
+    JSON.stringify(options.checkpoint)+":()=>{process.kill(process.pid,'SIGKILL')}", 
+    "});",
+   ].join("\n");
+   const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
+    {timeout:30000,encoding:"utf8"});
+   assert.equal(child.signal,"SIGKILL",
+    checkpoint+": child did not terminate at checkpoint; stderr="+child.stderr);
+   const verified=await readAtomicRelease(w.output);
+   const beforeRename=checkpoint==="__testAfterReleaseInstall";
+   assert.equal(verified.releaseSha256,
+    beforeRename?initial.releaseSha256:alternate.releaseSha256);
+   assert.equal(execute(verified.wasm),42n);
+   assert.deepEqual(verified.manifest.producer, 
+    (beforeRename?await readAtomicRelease(w.output):alternate).manifest.producer);
+   const inventory=await inspectAtomicReleaseState(w.output);
+   assert.equal(inventory.current,verified.releaseSha256);
+   assert.deepEqual(inventory.invalid,[]);
+   if(beforeRename)assert.ok(inventory.unreferenced.includes(alternate.releaseSha256));
+  }finally{await cleanup(w.dir)}
+ }
 });
