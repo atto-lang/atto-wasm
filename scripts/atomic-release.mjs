@@ -144,7 +144,7 @@ export async function publishAtomicRelease({
  output,wasm,manifest=null,provenance,
  // Test-only fault hooks run AFTER genuine IO barriers. They can only cause
  // a failure, never suppress fsync or alter the contents being sealed.
- __testAfterReleaseInstall,__testAfterPointerRename
+ __testAfterReleaseInstall,__testAfterPointerRename,__testBeforeCleanup
 }){
  if(typeof output!=="string"||!output)fail("missing output");
  if(!(wasm instanceof Uint8Array))fail("invalid Wasm bytes");
@@ -162,7 +162,7 @@ export async function publishAtomicRelease({
  // Persist the release-root directory entry before any pointer can refer to it.
  await fsyncDirectory(dirname(root));
  const stage=await mkdtemp(join(root,".staging-"));
- let pointerDir=null,primaryError=null;
+ let pointerDir=null,primaryError=null,committedResult=null;
  try{
   await durableWrite(join(stage,"guest.wasm"),bytes);
   await durableWrite(join(stage,"provenance.json"),provenanceBytes);
@@ -195,7 +195,8 @@ export async function publishAtomicRelease({
   }catch(error){
    throw new AtomicReleaseCommitUncertainError({pointer,releaseSha256,cause:error});
   }
-  return {releaseSha256,pointer,directory:destinationDir,wasmSha256:seal.fileHashes.wasm};
+  committedResult={releaseSha256,pointer,directory:destinationDir,wasmSha256:seal.fileHashes.wasm};
+  return committedResult;
  }catch(error){
   primaryError=error;
   throw error;
@@ -203,12 +204,24 @@ export async function publishAtomicRelease({
   // Cleanup errors must not erase the more important commit outcome.
   // A crashed/failed cleanup may leave an orphan requiring inspection.
   try{
+   if(__testBeforeCleanup)await __testBeforeCleanup();
    try{await chmod(stage,0o700)}
    catch(error){if(error.code!=="ENOENT")throw error}
    await rm(stage,{recursive:true,force:true});
    if(pointerDir)await rm(pointerDir,{recursive:true,force:true});
   }catch(cleanupError){
-   if(!primaryError)throw cleanupError;
+   if(primaryError){
+    primaryError.cleanupFailure=String(cleanupError?.message||cleanupError).slice(0,256);
+   }else if(committedResult){
+    // Durable publication is a success, not an abort. Surface the orphaned
+    // temp cleanup as a warning for operator inspection.
+    committedResult.cleanupWarning={
+     code:"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED",
+     message:String(cleanupError?.message||cleanupError).slice(0,256)
+    };
+   }else{
+    throw cleanupError;
+   }
   }
  }
 }
