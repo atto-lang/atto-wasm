@@ -107,3 +107,45 @@ test("corrupt staged metadata never publishes a pointer",async()=>{
   assert.equal((await readdir(w.dir)).some(x=>x.startsWith(".oreslang-pointer-")),false);
  }finally{await cleanup(w.dir)}
 });
+
+test("atomic publisher refuses coexistence with stale legacy sidecars",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,environment:"browser",publication:"legacy"});
+  await assert.rejects(compileOresToWasm({
+   ...w,environment:"browser",publication:"atomic"
+  }),/legacy and atomic artifact publications cannot share/);
+  await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+ }finally{await cleanup(w.dir)}
+});
+
+test("legacy publisher refuses coexistence with an installed atomic pointer",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const before=await readFile(w.output+".current.json");
+  await assert.rejects(compileOresToWasm({
+   ...w,environment:"browser",publication:"legacy"
+  }),/legacy and atomic artifact publications cannot share/);
+  assert.deepEqual(await readFile(w.output+".current.json"),before);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("competing distinct verified source releases never mix metadata",async()=>{
+ const w=await workspace();
+ try{
+  const other=join(w.dir,"other.ores");
+  await writeFile(other,"pub fnc main(): int { return 40 + 2; }\n");
+  const [first,second]=await Promise.all([
+   compileOresToWasm({...w,environment:"browser",publication:"atomic"}),
+   compileOresToWasm({...w,source:other,environment:"browser",publication:"atomic"})
+  ]);
+  assert.notEqual(first.releaseSha256,second.releaseSha256);
+  const published=await readAtomicRelease(w.output);
+  assert.ok([first.releaseSha256,second.releaseSha256].includes(published.releaseSha256));
+  assert.ok([first.sourceSha256,second.sourceSha256].includes(published.provenance.sourceSha256));
+  assert.equal(published.manifest.producer.sourceSha256,published.provenance.sourceSha256);
+  assert.equal(execute(published.wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
