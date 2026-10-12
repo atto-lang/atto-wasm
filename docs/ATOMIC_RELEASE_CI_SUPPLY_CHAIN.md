@@ -25,9 +25,11 @@ gate and genuine source compiler integration.
 
 - npm advisories depend on registry state; the gate is rerun and may fail if
   new advisories are published.
-- The Python `jsonschema` direct version, `clang`/OS packages, and GitHub
-  Actions action references are not yet cryptographically pinned end-to-end.
-  The npm lockfile is **not** an attestation for those tools.
+- Python schema packages are version-and-SHA-hash locked; GitHub Actions
+  action references are exact commit SHAs. Native direct apt package versions
+  are now pinned but Debian package bytes, the transitive package graph, and
+  the Ubuntu hosted runner image remain outside a fully cryptographic
+  reproducibility guarantee. The npm lockfile alone attests to none of them.
 - The emitted-schema run exercises a bounded corpus, not arbitrary JSON.
   Normative JSON Schema and runtime admission checks remain necessary.
 
@@ -69,19 +71,29 @@ platform distributions; a new target platform must be independently tested.
 
 ## Native toolchain observations
 
-The native LLVM workflow SHA-pins its own Oreslang compiler source blobs and
-now writes `build/native-toolchain-attestation.json`, recording the source
-commit and tree, built compiler SHA-256, installed Ubuntu package versions,
-resolved Clang/CMake executable SHA-256 and versions, and the two verified
-sealed Wasm output identities. The CI workflow uploads this evidence as
-`native-wasm-toolchain-attestation` for 30 days.
+The four workflows now target Ubuntu 24.04. `contracts/native-toolchain-ubuntu2404.lock.json`
+pins the five direct native build-package versions: build-essential, CMake,
+Clang, LLD, and LLVM development headers. `scripts/verify-native-toolchain-lock.py`
+renders exact `apt-get install package=version` arguments and compares the
+installed versions afterward. Wasm and schema workflows apply its Clang/LLD
+subset, and the LLVM workflow applies all five. A repository update that no
+longer provides a pinned version **fails CI closed**, rather than silently
+replacing the compiler.
 
-The attestation is deliberately labelled an **observation**, not a signed
-provenance, deterministic-build proof, or guarantee against a compromised
-runner. The LLVM/Clang packages are installed from live Ubuntu repositories
-and their exact versions are *recorded* rather than hard pinned. Fully
-reproducible native builds still require a digest-pinned OCI image or fixed
-package repository snapshot and independent rebuild comparisons.
+The LLVM workflow SHA-pins its own Oreslang compiler source blobs and writes
+`build/native-toolchain-attestation.json`, recording the source commit/tree,
+native compiler hash, direct-package-lock hash, installed package versions,
+resolved Clang/CMake binary hashes, and two sealed Wasm identities. It also
+writes `build/native-installed-packages.txt` with the sorted **complete
+installed Debian package graph** and binds its SHA-256 to the attestation.
+Both artifacts are uploaded as `native-wasm-toolchain-attestation` for
+30 days, allowing external version-graph comparisons.
+
+This is an **observation**, not signed provenance or proof of bit-identical
+builds. Native packages are version pinned but still downloaded from live
+Ubuntu repositories; transitive .deb versions and bytes may change with the
+base image. Full reproducibility still requires a digest-pinned builder or
+immutable apt snapshot, complete transitive lock, and independent rebuilds.
 
 ## Durability fault coverage
 
@@ -98,3 +110,17 @@ These deterministic injections exercise API state/error invariants only.
 They **do not** simulate a real block device cache, an unclean VM reset, or
 hardware power loss. Physical fault/recovery qualification remains a separate
 mandatory release-hardening milestone.
+
+## Process-termination crash matrix
+
+In addition to exception injection, the Node suite terminates a separate
+publisher process with actual `SIGKILL` at five synchronization checkpoints:
+after installed release rename; after release-root sync; before pointer
+rename; after pointer rename; and before final cleanup. A verified reader
+must always select the old or newly committed *complete* release, never a
+mixture. Before pointer rename, the prior release remains selected; after
+rename, the new release is visible but durability is not thereby proven.
+
+These tests verify process-death behavior on the CI filesystem, not a forced
+unclean VM shutdown or a block-device cache flush. Physical power-cut
+qualification is still tracked in issue #27.
