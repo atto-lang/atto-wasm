@@ -306,15 +306,15 @@ test("array element accessors and hidden schema array authority reject even for 
   accesses++;return [];
  }});
  await assert.rejects(encodeMessage(schema,{variant:"Empty",fields:{parts:malicious}}),
-  /invalid array\\/list element element/);
+  /invalid array.list element element/);
  const hidden=[[]];
  Object.defineProperty(hidden,"capability",{enumerable:false,value:"network"});
  await assert.rejects(encodeMessage(schema,{variant:"Empty",fields:{parts:hidden}}),
-  /invalid array\\/list element shape/);
+  /invalid array.list element shape/);
  const withSymbol=[[]];
  Object.defineProperty(withSymbol,Symbol("access"),{value:1});
  await assert.rejects(encodeMessage(schema,{variant:"Empty",fields:{parts:withSymbol}}),
-  /invalid array\\/list element shape/);
+  /invalid array.list element shape/);
  const types=["i64"];
  Object.defineProperty(types,0,{configurable:true,enumerable:true,get(){
   accesses++;return "i64";
