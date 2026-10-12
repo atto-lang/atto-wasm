@@ -386,3 +386,18 @@ test("byte snapshot rejects proxies and oversized views before any payload decod
   assert.equal(traps,0);
  }
 });
+
+test("UTF-8 preflight admits exact byte-budget boundaries and rejects oversized text",async()=>{
+ const maxBytes=80; // 44 header + 4 length + up to 24 UTF-8 + 8 i64
+ for(const text of ["a".repeat(24),"🦊".repeat(6),"ࠀ".repeat(8)]){
+  const message={variant:"Compute",fields:{text,n:42n}};
+  const bytes=await encodeMessage(contract,message,{maxBytes});
+  assert.equal(bytes.length,80);
+  assert.deepEqual(await decodeMessage(contract,bytes,{maxBytes}),message);
+ }
+ for(const text of ["a".repeat(25),"🦊".repeat(7),"ࠀ".repeat(9),
+   "🦊".repeat(300000)]){
+  await assert.rejects(encodeMessage(contract,{variant:"Compute",fields:{text,n:42n}},
+   {maxBytes}),/byte budget exceeded/);
+ }
+});
