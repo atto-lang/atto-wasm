@@ -132,13 +132,19 @@ async function digest(c){
  return new Uint8Array(await crypto.subtle.digest("SHA-256",
   enc.encode("Oreslang owned-message contract v1\n"+JSON.stringify(c))));
 }
-function stringBytes(s){
+function stringBytes(s,remaining){
  if(typeof s!=="string")fail("expected string");
+ // Preflight the exact UTF-8 byte length before TextEncoder allocates. A
+ // hostile multi-megabyte string must not bypass a small envelope byte budget.
+ let bytes=0;
  for(let i=0;i<s.length;i++){
   const n=s.charCodeAt(i);
   if(n>=0xd800&&n<=0xdbff){
    if(++i>=s.length||s.charCodeAt(i)<0xdc00||s.charCodeAt(i)>0xdfff)fail("unpaired surrogate");
+   bytes+=4;
   }else if(n>=0xdc00&&n<=0xdfff)fail("unpaired surrogate");
+  else bytes+=n<0x80?1:n<0x800?2:3;
+  if(bytes>remaining)fail("byte budget exceeded");
  }
  return enc.encode(s);
 }
@@ -175,7 +181,7 @@ function encode(w,t,x,d=0){
  if(t==="i64")return w.i64(x);
  if(t==="bool"){if(typeof x!=="boolean")fail("expected bool");return w.u8(x?1:0);}
  if(t==="string"||t==="bytes"){
-  const b=t==="string"?stringBytes(x):x;
+  const b=t==="string"?stringBytes(x,w.limit-w.size-4):x;
   const view=checkedView(b);
   w.u32(view.byteLength);return w.put(view);
  }
