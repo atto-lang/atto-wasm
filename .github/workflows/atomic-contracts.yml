@@ -23,9 +23,11 @@ jobs:
         run: python3 scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures"
       - name: Emit and validate the TypeSpec release schema
         run: |
-          npm install --no-save --package-lock=false '@typespec/compiler@1.4.0' '@typespec/json-schema@1.4.0'
+          npm ci --ignore-scripts --no-fund --no-audit
+          npm ls --depth=0 '@typespec/compiler' '@typespec/json-schema'
+          npm audit --audit-level=moderate
           mkdir -p build/atomic-typespec-emitted
-          npx tsp compile contracts/atomic-release.tsp \
+          npx --no-install tsp compile contracts/atomic-release.tsp \
             --emit=@typespec/json-schema \
             --output-dir=build/atomic-typespec-emitted \
             --option '@typespec/json-schema.file-type=json' \
