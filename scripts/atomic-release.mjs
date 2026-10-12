@@ -114,6 +114,7 @@ export async function readAtomicRelease(output){
  // Publisher emits a single canonical encoding. Reject duplicate JSON keys,
  // reordered fields or alternate encodings instead of trusting last-key-wins.
  if(!p||typeof p!=="object"||Array.isArray(p)||
+    Object.keys(p).join(",")!=="schemaVersion,releaseSha256"||
     !pointerBytes.equals(canonical(p)))fail("noncanonical current pointer");
  if(p.schemaVersion!==1||!hex(p.releaseSha256)||
     Object.keys(p).sort().join(",")!=="releaseSha256,schemaVersion")
