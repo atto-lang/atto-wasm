@@ -103,7 +103,6 @@ function parseCanonicalSeal(bytes){
 }
 function descriptorFor(wasm,manifest,provenance){
  if(wasm.length<8||wasm.length>16777216)fail("Wasm budget");
- if(provenance?.wasmSha256!==digest(wasm))fail("invalid provenance digest");
  if(!WebAssembly.validate(wasm))fail("invalid executable Wasm");
  if(!exactKeys(provenance,["schemaVersion","kind","compilerSha256",
       "sourceSha256","llvmIrSha256","wasmSha256","exportName","wasmBytes",
@@ -119,6 +118,7 @@ function descriptorFor(wasm,manifest,provenance){
     !boundedCodePoints(provenance.clangVersion,1,256)||
     !boundedCodePoints(provenance.note,0,1024))
    fail("invalid producer record");
+ if(provenance.wasmSha256!==digest(wasm))fail("invalid provenance digest");
  if(WebAssembly.Module.imports(new WebAssembly.Module(wasm)).length!==0)
    fail("guest Wasm host imports forbidden");
  try{assertCoreI64Entry(wasm,provenance.exportName)}
