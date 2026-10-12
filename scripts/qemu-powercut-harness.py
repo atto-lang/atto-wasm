@@ -110,17 +110,32 @@ def validate_cold_boot_receipt(serial_output,checkpoint,returncode):
  it can be printed before an unhandled exception or failed final cleanup.
  """
  lines=[line.strip() for line in serial_output.splitlines()]
- good=[line for line in lines
-       if line.startswith("GUEST_COLD_BOOT_RECOVERY_OK "+checkpoint+" ")]
- if len(good)!=1:
+ # The guest is trusted code, but its serial stream is still an unstructured
+ # transport. Never accept prefix matches, extra fields, truncated digests,
+ # arbitrary values, or receipt output for the wrong crash checkpoint.
+ prefix="GUEST_COLD_BOOT_RECOVERY_OK "
+ markers=[line for line in lines if line.startswith(prefix)]
+ if len(markers)!=1:
   raise RuntimeError("cold-boot verification receipt missing or repeated")
+ wanted=prefix+re.escape(checkpoint)
+ match=re.fullmatch(wanted+r" value=(42|43) identity=([0-9a-f]{64})",markers[0])
+ if not match:
+  raise RuntimeError("malformed cold-boot recovery receipt")
+ value=int(match.group(1))
+ if checkpoint in ("__testAfterReleaseRename","__testAfterReleaseInstall",
+                   "__testBeforePointerRename") and value!=42:
+  raise RuntimeError("pre-rename receipt selected wrong release")
+ if checkpoint=="__testBeforeCleanup" and value!=43:
+  raise RuntimeError("post-commit receipt selected wrong release")
+ if checkpoint not in CHECKPOINTS:
+  raise RuntimeError("unsupported cold-boot checkpoint")
  if returncode!=0:
   raise RuntimeError("QEMU cold-boot exited abnormally: "+str(returncode))
  if any("GUEST_PROCESS_ERROR=" in line for line in lines):
   raise RuntimeError("guest verifier reported a nonzero process result")
  if lines.count("GUEST_PROCESS_CLEAN_FINISH")!=1:
   raise RuntimeError("guest verifier did not complete cleanly")
- return good[0]
+ return markers[0]
 
 
 def boot_until(kernel,initrd,disk,mode,checkpoint):
