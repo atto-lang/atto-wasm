@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
+import {spawnSync} from "node:child_process";
 import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -167,7 +168,8 @@ test("signed matching hashes alone cannot admit malformed or incompatible Wasm",
    const producer={schemaVersion:1,kind:"llvm-ores-to-wasm32-core-experimental",
      compilerSha256:"1".repeat(64),sourceSha256:"2".repeat(64),
      llvmIrSha256:"3".repeat(64),wasmSha256:h,
-     wasmBytes:bytes.length,exportName:"main"};
+     wasmBytes:bytes.length,exportName:"main",importCount:0,
+     clangVersion:"fixture-clang-verified",note:"ABl negative test; valid v1 metadata"};
    await assert.rejects(publishAtomicRelease({output:w.output,
      wasm:bytes,provenance:producer}),message);
    await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
@@ -289,6 +291,69 @@ test("duplicate-key or noncanonical current pointer never selects a release",asy
  }finally{await cleanup(w.dir)}
 });
 
+test("canonical release seal rejects duplicate keys and alternate encodings",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const release=await readAtomicRelease(w.output);
+  const sealPath=join(release.directory,"seal.json");
+  const good=await readFile(sealPath,"utf8");
+  await chmod(sealPath,0o600);
+  const bad=[
+   good.replace('{"schemaVersion":1,','{"schemaVersion":1,"schemaVersion":1,'),
+   good.replace('{"schemaVersion":1,','{ "schemaVersion":1,'),
+   good.replace(',"type":"oreslang.atomic-release-v1"',',"type":"oreslang.atomic-release-v1","type":"oreslang.atomic-release-v1"'),
+   good.replace('{"schemaVersion":1,"type":"oreslang.atomic-release-v1",','{"type":"oreslang.atomic-release-v1","schemaVersion":1,'),
+   good.replace('"fileHashes":{"wasm":','"fileHashes":{"wasm":"'+release.releaseSha256+'","wasm":')
+  ];
+  for(const malformed of bad){
+   assert.notEqual(malformed,good);
+   await writeFile(sealPath,malformed);
+   await assert.rejects(readAtomicRelease(w.output),/noncanonical release seal/);
+  }
+  await writeFile(sealPath,good);
+  const restored=await readAtomicRelease(w.output);
+  assert.equal(restored.releaseSha256,release.releaseSha256);
+  assert.equal(execute(restored.wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("strict atomic metadata admission matches closed schema and refuses extra authority",async()=>{
+ const w=await workspace();
+ try{
+  const baseline=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const release=await readAtomicRelease(w.output);
+  const previous=await readFile(w.output+".current.json");
+  const extraProducers=[
+   {...release.provenance,untrusted:true},
+   {...release.provenance,importCount:1},
+   {...release.provenance,clangVersion:""},
+   {...release.provenance,note:42},
+   {...release.provenance,note:"x".repeat(1025)},
+  ];
+  for(const provenance of extraProducers){
+   await assert.rejects(publishAtomicRelease({
+    output:w.output,wasm:release.wasm,manifest:release.manifest,provenance
+   }),/invalid producer record/);
+   assert.deepEqual(await readFile(w.output+".current.json"),previous);
+  }
+  const badManifests=[
+   {...release.manifest,hostCapabilityGrants:["net"]},
+   {...release.manifest,producer:{...release.manifest.producer,debugMode:true}},
+   {...release.manifest,memory:{maximumPages:2,unbounded:true}},
+   {...release.manifest,entry:"m".repeat(129)},
+   {...release.manifest,requiredCapabilities:{"0":"net",length:0}},
+  ];
+  for(const manifest of badManifests){
+   await assert.rejects(publishAtomicRelease({
+    output:w.output,wasm:release.wasm,manifest,provenance:release.provenance
+   }),/inconsistent manifest provenance/);
+   assert.deepEqual(await readFile(w.output+".current.json"),previous);
+  }
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
 
 test("failure before pointer rename keeps the previous release selected",async()=>{
  const w=await workspace();
@@ -364,5 +429,124 @@ test("cleanup failure after durable commit returns success with explicit warning
   const inventory=await inspectAtomicReleaseState(w.output);
   assert.equal(inventory.current,baseline.releaseSha256);
   assert.ok(inventory.staging.some(name=>name.startsWith(".staging-")));
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("integration: strict schema admission survives uncertain and confirmed publication",async()=>{
+ const w=await workspace();
+ try{
+  const first=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const alternateSource=join(w.dir,"integrated-next.ores");
+  await writeFile(alternateSource,"pub fnc main(): int { return 41 + 1; }\n");
+  const alternateOutput=join(w.dir,"integrated-next.wasm");
+  await compileOresToWasm({...w,source:alternateSource,output:alternateOutput,
+   environment:"browser",publication:"atomic"});
+  const next=await readAtomicRelease(alternateOutput);
+  const oldPointer=await readFile(w.output+".current.json");
+  assert.notEqual(first.releaseSha256,next.releaseSha256);
+  await assert.rejects(publishAtomicRelease({
+   output:w.output,wasm:next.wasm,provenance:next.provenance,
+   manifest:{...next.manifest,requiredCapabilities:[],unexpectedHostAuthority:true},
+   __testAfterPointerRename:()=>{throw Error("must never reach rename")}
+  }),/inconsistent manifest provenance/);
+  assert.deepEqual(await readFile(w.output+".current.json"),oldPointer);
+  await assert.rejects(publishAtomicRelease({
+   output:w.output,wasm:next.wasm,provenance:next.provenance,
+   manifest:next.manifest,
+   __testAfterPointerRename:()=>{throw Error("injected unconfirmed durability")}
+  }),error=>{
+   assert.ok(error instanceof AtomicReleaseCommitUncertainError);
+   assert.equal(error.code,"ATOMIC_RELEASE_COMMIT_UNCERTAIN");
+   assert.equal(error.releaseSha256,next.releaseSha256);
+   return true;
+  });
+  // Current visibility is a verified release, not a power-loss durability
+  // guarantee. No external operation or blind retry is performed here.
+  const recovered=await readAtomicRelease(w.output);
+  assert.equal(recovered.releaseSha256,next.releaseSha256);
+  assert.deepEqual(recovered.manifest,next.manifest);
+  assert.equal(execute(recovered.wasm),42n);
+  const confirmed=await publishAtomicRelease({
+   output:w.output,wasm:next.wasm,manifest:next.manifest,
+   provenance:next.provenance,
+   __testBeforeCleanup:()=>{throw Error("injected cleanup failure")}
+  });
+  assert.equal(confirmed.releaseSha256,next.releaseSha256);
+  assert.equal(confirmed.cleanupWarning.code,"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED");
+  const state=await inspectAtomicReleaseState(w.output);
+  assert.equal(state.current,next.releaseSha256);
+  assert.ok(state.unreferenced.includes(first.releaseSha256));
+  assert.ok(state.staging.length>0);
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("process termination at three publication barriers never exposes a partial release",async()=>{
+ const moduleURL=new URL("../scripts/atomic-release.mjs",import.meta.url).href;
+ for(const checkpoint of ["__testAfterReleaseInstall","__testAfterPointerRename","__testBeforeCleanup"]){
+  const w=await workspace();
+  try{
+   const initial=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+   const alternateSource=join(w.dir,"crash-next.ores");
+   await writeFile(alternateSource,"pub fnc main(): int { return 40 + 2; }\n");
+   const alternateOutput=join(w.dir,"crash-next.wasm");
+   await compileOresToWasm({...w,source:alternateSource,output:alternateOutput,
+    publication:"atomic",environment:"browser"});
+   const alternate=await readAtomicRelease(alternateOutput);
+   assert.notEqual(alternate.releaseSha256,initial.releaseSha256);
+   const options={
+    output:w.output,releaseOutput:alternateOutput,checkpoint,moduleURL
+   };
+   const childSource=[
+    "import {readAtomicRelease,publishAtomicRelease} from "+JSON.stringify(options.moduleURL)+";",
+    "const alt=await readAtomicRelease("+JSON.stringify(options.releaseOutput)+");",
+    "await publishAtomicRelease({output:"+JSON.stringify(options.output)+",",
+    "wasm:alt.wasm,manifest:alt.manifest,provenance:alt.provenance,",
+    JSON.stringify(options.checkpoint)+":()=>{process.kill(process.pid,'SIGKILL')}", 
+    "});",
+   ].join("\n");
+   const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
+    {timeout:30000,encoding:"utf8"});
+   assert.equal(child.signal,"SIGKILL",
+    checkpoint+": child did not terminate at checkpoint; stderr="+child.stderr);
+   const verified=await readAtomicRelease(w.output);
+   const beforeRename=checkpoint==="__testAfterReleaseInstall";
+   assert.equal(verified.releaseSha256,
+    beforeRename?initial.releaseSha256:alternate.releaseSha256);
+   assert.equal(execute(verified.wasm),42n);
+   assert.deepEqual(verified.manifest.producer, 
+    (beforeRename?await readAtomicRelease(w.output):alternate).manifest.producer);
+   const inventory=await inspectAtomicReleaseState(w.output);
+   assert.equal(inventory.current,verified.releaseSha256);
+   assert.deepEqual(inventory.invalid,[]);
+   if(beforeRename)assert.ok(inventory.unreferenced.includes(alternate.releaseSha256));
+  }finally{await cleanup(w.dir)}
+ }
+});
+
+
+test("compiler bridge preserves confirmed commit through three cleanup failures",async()=>{
+ const w=await workspace();
+ try{
+  const result=await compileOresToWasm({...w,
+   publication:"atomic",environment:"browser",
+   __testBeforeAtomicCleanup:()=>{throw Error("injected publisher cleanup failure")},
+   __testAfterLockCleanup:()=>{throw Error("injected lock cleanup failure")},
+   __testAfterScratchCleanup:()=>{throw Error("injected scratch cleanup failure")}
+  });
+  assert.match(result.releaseSha256,/^[0-9a-f]{64}$/);
+  assert.equal(result.cleanupWarning.code,"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED");
+  assert.deepEqual(result.cleanupWarnings.map(warning=>warning.code),[
+   "ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED",
+   "ARTIFACT_POST_COMMIT_CLEANUP_FAILED",
+   "ARTIFACT_POST_COMMIT_CLEANUP_FAILED"
+  ]);
+  assert.deepEqual(result.cleanupWarnings.slice(1).map(x=>x.scope),["lock","scratch"]);
+  const release=await readAtomicRelease(w.output);
+  assert.equal(release.releaseSha256,result.releaseSha256);
+  assert.equal(execute(release.wasm),42n);
+  const state=await inspectAtomicReleaseState(w.output);
+  assert.equal(state.current,result.releaseSha256);
  }finally{await cleanup(w.dir)}
 });

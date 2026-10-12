@@ -25,6 +25,11 @@ export class AtomicReleaseCommitUncertainError extends Error {
 }
 const paths=output=>({root:output+".releases",pointer:output+".current.json"});
 const canonical=x=>Buffer.from(JSON.stringify(x)+"\n");
+// Keep runtime admission aligned with atomic-release-v1.schema.json, which
+// specifies closed records. Digest equality is not a schema/authority check.
+const exactKeys=(value,keys)=>value!==null&&typeof value==="object"&&
+ !Array.isArray(value)&&Object.keys(value).length===keys.length&&
+ keys.every(key=>Object.hasOwn(value,key));
 // Explicit Linux/POSIX durability barrier. On filesystems without directory
 // fsync support this fails closed rather than claiming persistence.
 async function fsyncDirectory(dir){
@@ -44,25 +49,40 @@ async function safeFile(path,limit){
  if(bytes.length>limit)fail("oversized file");
  return bytes;
 }
-async function safeJSON(path){
- let value;
- try{value=JSON.parse((await safeFile(path,16384)).toString("utf8"))}
- catch{fail("invalid JSON file")}
- if(!value||typeof value!=="object"||Array.isArray(value))fail("invalid JSON object");
- return value;
+// Verify the exact bytes before interpreting the seal. Unlike JSON.parse,
+// byte-canonical validation rejects duplicate keys, alternate whitespace,
+// field reordering and invalid UTF-8 that other runtimes may parse differently.
+function parseCanonicalSeal(bytes){
+ let seal;
+ try{seal=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes))}
+ catch{fail("invalid release seal JSON")}
+ if(!seal||typeof seal!=="object"||Array.isArray(seal)||
+    !bytes.equals(canonical(seal))||
+    Object.keys(seal).join(",")!=="schemaVersion,type,fileHashes"||
+    !seal.fileHashes||typeof seal.fileHashes!=="object"||
+    Array.isArray(seal.fileHashes)||
+    Object.keys(seal.fileHashes).join(",")!=="wasm,manifest,provenance")
+   fail("noncanonical release seal");
+ return seal;
 }
 function descriptorFor(wasm,manifest,provenance){
  if(wasm.length<8||wasm.length>16777216)fail("Wasm budget");
  if(provenance?.wasmSha256!==digest(wasm))fail("invalid provenance digest");
  if(!WebAssembly.validate(wasm))fail("invalid executable Wasm");
- if(!provenance||typeof provenance!=="object"||Array.isArray(provenance)||
-    !["llvm-ores-to-wasm32-core-experimental"].includes(provenance.kind)||
+ if(!exactKeys(provenance,["schemaVersion","kind","compilerSha256",
+      "sourceSha256","llvmIrSha256","wasmSha256","exportName","wasmBytes",
+      "importCount","clangVersion","note"])||
+    provenance.kind!=="llvm-ores-to-wasm32-core-experimental"||
     provenance.schemaVersion!==1||
     !["compilerSha256","sourceSha256","llvmIrSha256"].every(k=>
       hex(provenance[k]))||!hex(provenance.wasmSha256)||
     !Number.isSafeInteger(provenance.wasmBytes)||provenance.wasmBytes!==wasm.length||
     typeof provenance.exportName!=="string"||
-    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(provenance.exportName))
+    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(provenance.exportName)||
+    provenance.importCount!==0||
+    typeof provenance.clangVersion!=="string"||
+    provenance.clangVersion.length<1||provenance.clangVersion.length>256||
+    typeof provenance.note!=="string"||provenance.note.length>1024)
    fail("invalid producer record");
  if(WebAssembly.Module.imports(new WebAssembly.Module(wasm)).length!==0)
    fail("guest Wasm host imports forbidden");
@@ -72,19 +92,28 @@ function descriptorFor(wasm,manifest,provenance){
  if(memory.memoryCount!==1||!memory.hasMemoryMaximum||memory.memoryMaximum!==2)
    fail("invalid bounded 2-page guest memory");
 
- if(manifest!==null&&(manifest?.schemaVersion!==1||
+ if(manifest!==null&&(!exactKeys(manifest,["schemaVersion","artifactType",
+      "target","environment","backend","entry","wasmSha256","wasmBytes",
+      "imports","requiredCapabilities","memory","producer"])||
+   manifest.schemaVersion!==1||
    manifest.artifactType!=="oreslang.core-wasm.i64-v1"||
    manifest.target!=="wasm32"||manifest.backend!=="wasm"||
    !["browser","edge-js","edge-wasi"].includes(manifest.environment)||
+   typeof manifest.entry!=="string"||manifest.entry.length>128||
+   !/^[A-Za-z_][A-Za-z0-9_]*$/.test(manifest.entry)||
    manifest.entry!==provenance.exportName||
-   manifest.wasmBytes!==wasm.length||manifest.memory?.maximumPages!==2||
+   manifest.wasmBytes!==wasm.length||
+   !exactKeys(manifest.memory,["maximumPages"])||
+   manifest.memory.maximumPages!==2||
    !Array.isArray(manifest.imports)||manifest.imports.length!==0||
    !Array.isArray(manifest.requiredCapabilities)||
    manifest.requiredCapabilities.length!==0||
-   manifest?.wasmSha256!==digest(wasm)||
-   manifest.producer?.sourceSha256!==provenance.sourceSha256||
-   manifest.producer?.compilerSha256!==provenance.compilerSha256||
-   manifest.producer?.llvmIrSha256!==provenance.llvmIrSha256))
+   manifest.wasmSha256!==digest(wasm)||
+   !exactKeys(manifest.producer,["compilerSha256","sourceSha256",
+      "llvmIrSha256"])||
+   manifest.producer.sourceSha256!==provenance.sourceSha256||
+   manifest.producer.compilerSha256!==provenance.compilerSha256||
+   manifest.producer.llvmIrSha256!==provenance.llvmIrSha256))
   fail("inconsistent manifest provenance");
  const fileHashes={wasm:digest(wasm),manifest:manifest===null?null:digest(canonical(manifest)),
    provenance:digest(canonical(provenance))};
@@ -95,7 +124,7 @@ async function verifyDir(dir,id){
  if(!hex(id))fail("invalid identity");
  const st=await lstat(dir);
  if(!st.isDirectory()||st.isSymbolicLink())fail("release is not a real directory");
- const seal=await safeJSON(join(dir,"seal.json"));
+ const seal=parseCanonicalSeal(await safeFile(join(dir,"seal.json"),16384));
  if(seal.schemaVersion!==1||seal.type!=="oreslang.atomic-release-v1"||
     !hex(seal.fileHashes?.wasm)||!hex(seal.fileHashes?.provenance)||
     !(seal.fileHashes.manifest===null||hex(seal.fileHashes.manifest))||

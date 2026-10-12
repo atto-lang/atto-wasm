@@ -45,7 +45,29 @@ async function rejectMixedPublication(published,publication){
 // Cooperating compiler processes serialize the actual publication boundary,
 // not source compilation. An abandoned lock fails closed until cleaned by an
 // operator; never steal a lock based on an untrusted pid/time claim.
-async function withPublicationLock(published,publication,callback){
+// The host bridge has TWO additional cleanup scopes beyond the atomic
+// publisher: its publication lock and scratch compilation directory. Neither
+// is permitted to turn an already committed release into a false abort or
+// replace an uncertain-commit receipt with a generic cleanup error.
+function preserveCleanupFailure(error,scope,cleanupError){
+ if(error&&typeof error==="object"){
+  error.cleanupFailures??=[];
+  error.cleanupFailures.push({
+   scope,message:String(cleanupError?.message||cleanupError).slice(0,256)
+  });
+ }
+}
+function attachCleanupWarning(result,scope,cleanupError){
+ const warning={
+  code:"ARTIFACT_POST_COMMIT_CLEANUP_FAILED",scope,
+  message:String(cleanupError?.message||cleanupError).slice(0,256)
+ };
+ if(!result.cleanupWarnings)
+  result.cleanupWarnings=result.cleanupWarning?[result.cleanupWarning]:[];
+ result.cleanupWarnings.push(warning);
+ result.cleanupWarning??=warning;
+}
+async function withPublicationLock(published,publication,callback,afterLockCleanup){
  const lock=published+".publication.lock";
  let acquired=false;
  for(let attempt=0;attempt<160;attempt++){
@@ -56,12 +78,25 @@ async function withPublicationLock(published,publication,callback){
   }
  }
  if(!acquired)throw Error("artifact publication lock unavailable");
+ let result=null,primaryError=null;
  try{
   // This second admission check is serialized across cooperating compilers.
   await rejectMixedPublication(published,publication);
-  return await callback();
+  result=await callback();
+  return result;
+ }catch(error){
+  primaryError=error;
+  throw error;
  }finally{
-  await rm(lock,{recursive:true,force:true});
+  try{
+   await rm(lock,{recursive:true,force:true});
+   // Test-only failure injection occurs AFTER the actual cleanup operation.
+   if(afterLockCleanup)await afterLockCleanup();
+  }catch(cleanupError){
+   if(primaryError)preserveCleanupFailure(primaryError,"lock",cleanupError);
+   else if(result)attachCleanupWarning(result,"lock",cleanupError);
+   else throw cleanupError;
+  }
  }
 }
 const absolute=(value,label)=>{if(!value||!isAbsolute(value))throw Error(label+" must be an absolute path");return value};
@@ -70,7 +105,12 @@ function run(command,args,{input}={}){
  if(output.error||output.status!==0||output.signal)throw Error("command failed ("+command+"): "+(output.error?.message||output.stderr||"exit "+output.status).slice(0,4000));
  return output.stdout||"";
 }
-export async function compileOresToWasm({compiler,source,output,exportName="main",clang=process.env.CLANG||"clang",compilerSha256,environment,publication="legacy"}){
+export async function compileOresToWasm({
+ compiler,source,output,exportName="main",clang=process.env.CLANG||"clang",
+ compilerSha256,environment,publication="legacy",
+ // Test-only fault hooks; they cannot skip real publication or cleanup IO.
+ __testAfterLockCleanup,__testAfterScratchCleanup,__testBeforeAtomicCleanup
+}){
  absolute(compiler,"compiler");
  absolute(source,"source");
  absolute(output,"output");
@@ -121,6 +161,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  // source imports must be resolved and pinned by a future module graph gate.
  const scratch=await mkdtemp(join(outputParent,".oreslang-wasm-"));
  const provisional=join(scratch,"guest.wasm");
+ let completedResult=null,primaryError=null;
  try{
  const stagedSource=join(scratch,"source.ores");
  const stagedCompiler=join(scratch,"compiler-exact");
@@ -189,15 +230,17 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   await writeFile(join(scratch,"artifact.json"),JSON.stringify(manifest,null,2)+"\n");
  }
  await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
- return await withPublicationLock(published,publication,async()=>{
+ completedResult=await withPublicationLock(published,publication,async()=>{
  if(publication==="atomic"){
   // The content-addressed release is privately staged and sealed first.
   // Only a single pointer rename makes it visible to verified readers.
   const publishedRelease=await publishAtomicRelease({
-   output:published,wasm,manifest,provenance:record
+   output:published,wasm,manifest,provenance:record,
+   __testBeforeCleanup:__testBeforeAtomicCleanup
   });
   return {...record,releaseSha256:publishedRelease.releaseSha256,
-   publication:"atomic",pointer:publishedRelease.pointer};
+   publication:"atomic",pointer:publishedRelease.pointer,
+   ...(publishedRelease.cleanupWarning?{cleanupWarning:publishedRelease.cleanupWarning}:{})};
  }
  // Publish metadata first; never expose a new executable after metadata
  // publication failed. Consumers must still SHA-check all sidecars: separate
@@ -206,8 +249,21 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  await rename(join(scratch,"provenance.json"),published+".provenance.json");
  await rename(provisional,published);
  return record;
- });
- }finally{await rm(scratch,{recursive:true,force:true})}
+ },__testAfterLockCleanup);
+ return completedResult;
+ }catch(error){
+  primaryError=error;
+  throw error;
+ }finally{
+  try{
+   await rm(scratch,{recursive:true,force:true});
+   if(__testAfterScratchCleanup)await __testAfterScratchCleanup();
+  }catch(cleanupError){
+   if(primaryError)preserveCleanupFailure(primaryError,"scratch",cleanupError);
+   else if(completedResult)attachCleanupWarning(completedResult,"scratch",cleanupError);
+   else throw cleanupError;
+  }
+ }
 }
 const calledFromCli=process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url);
 if(calledFromCli){
