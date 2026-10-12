@@ -28,6 +28,7 @@ jobs:
             --emit=@typespec/json-schema \
             --output-dir="$RUNNER_TEMP/atomic-typespec-emitted" \
             --option '@typespec/json-schema.file-type=json' \
+            --option '@typespec/json-schema.emitAllModels=true' \
             --option '@typespec/json-schema.bundleId=https://oreslang.dev/schemas/atomic-typespec-bundle.json' \
             --option '@typespec/json-schema.seal-object-schemas=true'
       - name: Inspect generated TypeSpec schemas
