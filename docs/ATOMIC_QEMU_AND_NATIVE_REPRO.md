@@ -79,6 +79,25 @@ publication filesystem protocol, not the full Oreslang compiler
 frontend**. Full real `.ores` compiler integration is separately
 covered by the native LLVM and independent-rebuild workflows.
 
+### Audited recovery receipt requirements
+
+A serial marker printed by the guest verifier is **not** by itself a
+successful cold-boot result. The host now drains the guest serial
+output until actual QEMU process termination and rejects abnormal
+QEMU exit status, any `GUEST_PROCESS_ERROR`, a missing or repeated
+`GUEST_PROCESS_CLEAN_FINISH`, a missing or repeated matching recovery
+marker, and wrong-checkpoint text. A separate stdlib-only regression
+suite exercises these false-positive cases before launching the slow
+VM matrix.
+
+The fixture now derives the **exact SHA-256 release identity** of
+both known i64 guests from their canonical seals. Cold-boot checking
+rejects a complete but unrelated guest artifact even when its
+exported i64 result happens to match 42 or 43. The workflow also
+validates all five checkpoint identities and the complete Git source
+tree inside the saved evidence JSON before considering the gate
+successful.
+
 The script writes `build/qemu-powercut-evidence.json` with complete
 source-tree identity, kernel/initramfs/QEMU hashes, fault checkpoints,
 and cold-boot counts. The CI artifact is retained for 30 days.
