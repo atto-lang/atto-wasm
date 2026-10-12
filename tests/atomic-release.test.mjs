@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {createHash} from "node:crypto";
 import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -147,5 +148,50 @@ test("competing distinct verified source releases never mix metadata",async()=>{
   assert.ok([first.sourceSha256,second.sourceSha256].includes(published.provenance.sourceSha256));
   assert.equal(published.manifest.producer.sourceSha256,published.provenance.sourceSha256);
   assert.equal(execute(published.wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("signed matching hashes alone cannot admit malformed or incompatible Wasm",async()=>{
+ const w=await workspace();
+ try{
+  const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
+  const invalid=Uint8Array.from([0,97,115,109,1,0,0,0,5]);
+  const i32=Uint8Array.from([
+   0,97,115,109,1,0,0,0,1,5,1,0x60,0,1,0x7f,
+   3,2,1,0,7,8,1,4,109,97,105,110,0,0,
+   10,6,1,4,0,0x41,42,0x0b
+  ]);
+  for(const [bytes,message] of [[invalid,/invalid executable Wasm/],
+    [i32,/invalid core i64 entry ABI|invalid bounded 2-page guest memory/]]){
+   const h=sha(bytes);
+   const producer={schemaVersion:1,kind:"llvm-ores-to-wasm32-core-experimental",
+     compilerSha256:"1".repeat(64),sourceSha256:"2".repeat(64),
+     llvmIrSha256:"3".repeat(64),wasmSha256:h,
+     wasmBytes:bytes.length,exportName:"main"};
+   await assert.rejects(publishAtomicRelease({output:w.output,
+     wasm:bytes,provenance:producer}),message);
+   await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+  }
+ }finally{await cleanup(w.dir)}
+});
+
+test("browser manifest cannot downgrade memory or request host capabilities",async()=>{
+ const w=await workspace();
+ try{
+  const published=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const release=await readAtomicRelease(w.output);
+  const pointer=await readFile(w.output+".current.json");
+  for(const manifest of [
+    {...release.manifest,memory:{maximumPages:3}},
+    {...release.manifest,requiredCapabilities:["net"]},
+    {...release.manifest,entry:"other"},
+    {...release.manifest,imports:[{module:"env",name:"host"}]}
+  ]){
+   await assert.rejects(publishAtomicRelease({output:w.output,
+     wasm:release.wasm,manifest,provenance:release.provenance}),
+     /inconsistent manifest provenance/);
+   assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+  }
+  assert.equal(published.releaseSha256,(await readAtomicRelease(w.output)).releaseSha256);
  }finally{await cleanup(w.dir)}
 });
