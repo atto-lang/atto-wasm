@@ -343,3 +343,26 @@ test("post-rename sync failure reports uncertain commit, never ordinary abort",a
   assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
  }finally{await cleanup(w.dir)}
 });
+
+
+test("cleanup failure after durable commit returns success with explicit warning",async()=>{
+ const w=await workspace();
+ try{
+  const baseline=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const previous=(await readFile(w.output+".current.json")).toString("utf8");
+  const checked=await readAtomicRelease(w.output);
+  const result=await publishAtomicRelease({
+   output:w.output,wasm:checked.wasm,
+   manifest:checked.manifest,provenance:checked.provenance,
+   __testBeforeCleanup:()=>{throw Error("injected temporary-directory cleanup failure")}
+  });
+  assert.equal(result.releaseSha256,baseline.releaseSha256);
+  assert.equal(result.cleanupWarning.code,"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED");
+  assert.match(result.cleanupWarning.message,/injected temporary-directory cleanup failure/);
+  assert.equal((await readFile(w.output+".current.json")).toString("utf8"),previous);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
+  const inventory=await inspectAtomicReleaseState(w.output);
+  assert.equal(inventory.current,baseline.releaseSha256);
+  assert.ok(inventory.staging.some(name=>name.startsWith(".staging-")));
+ }finally{await cleanup(w.dir)}
+});
