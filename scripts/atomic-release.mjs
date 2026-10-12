@@ -3,6 +3,7 @@
  * trust boundary. Immutable means nonoverwriting via this API, not WORM media.
  */
 import {createHash} from "node:crypto";
+import {isProxy} from "node:util/types";
 import {constants as fsConstants} from "node:fs";
 import {rename,rm,mkdir,mkdtemp,lstat,chmod,open,readdir} from "node:fs/promises";
 import {join,dirname,resolve} from "node:path";
@@ -41,7 +42,7 @@ const canonical=x=>Buffer.from(JSON.stringify(x)+"\n");
 // getters could otherwise return different values during validation and seal
 // serialization, producing inconsistent source-of-authority records.
 const exactKeys=(value,keys)=>value!==null&&typeof value==="object"&&
- !Array.isArray(value)&&
+ !isProxy(value)&&!Array.isArray(value)&&
  [Object.prototype,null].includes(Object.getPrototypeOf(value))&&
  Reflect.ownKeys(value).length===keys.length&&
  keys.every(key=>{
@@ -140,8 +141,10 @@ function descriptorFor(wasm,manifest,provenance){
    manifest.wasmBytes!==wasm.length||
    !exactKeys(manifest.memory,["maximumPages"])||
    manifest.memory.maximumPages!==2||
-   !Array.isArray(manifest.imports)||manifest.imports.length!==0||
+   !Array.isArray(manifest.imports)||isProxy(manifest.imports)||
+   manifest.imports.length!==0||
    !Array.isArray(manifest.requiredCapabilities)||
+   isProxy(manifest.requiredCapabilities)||
    manifest.requiredCapabilities.length!==0||
    manifest.wasmSha256!==digest(wasm)||
    !exactKeys(manifest.producer,["compilerSha256","sourceSha256",
@@ -211,7 +214,7 @@ export async function publishAtomicRelease({
  __testAfterReleaseInstall,__testAfterPointerRename,__testBeforeCleanup
 }){
  if(typeof output!=="string"||!output)fail("missing output");
- if(!(wasm instanceof Uint8Array))fail("invalid Wasm bytes");
+ if(isProxy(wasm)||!(wasm instanceof Uint8Array))fail("invalid Wasm bytes");
  const destination=resolve(output),{root,pointer}=paths(destination);
  const bytes=Buffer.from(wasm);
  const {seal,releaseSha256}=descriptorFor(bytes,manifest,provenance);
