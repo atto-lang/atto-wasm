@@ -9,6 +9,9 @@ import {assertCoreI64Entry} from "./core-i64-abi.mjs";
 import {inspectWasmBytes} from "./inspect-core-memory.mjs";
 const digest=b=>createHash("sha256").update(b).digest("hex");
 const hex=x=>typeof x==="string"&&/^[0-9a-f]{64}$/.test(x);
+// JSON Schema maxLength counts Unicode code points, not UTF-16 code units.
+// Use this for metadata strings that may contain non-BMP characters.
+const codePointLength=value=>[...value].length;
 const fail=x=>{throw Error("invalid atomic Oreslang release: "+x)};
 // A pointer rename is the visibility/linearization point. If the subsequent
 // directory sync fails, the pointer might already be visible or durable.
@@ -81,8 +84,8 @@ function descriptorFor(wasm,manifest,provenance){
     !/^[A-Za-z_][A-Za-z0-9_]*$/.test(provenance.exportName)||
     provenance.importCount!==0||
     typeof provenance.clangVersion!=="string"||
-    provenance.clangVersion.length<1||provenance.clangVersion.length>256||
-    typeof provenance.note!=="string"||provenance.note.length>1024)
+    codePointLength(provenance.clangVersion)<1||codePointLength(provenance.clangVersion)>256||
+    typeof provenance.note!=="string"||codePointLength(provenance.note)>1024)
    fail("invalid producer record");
  if(WebAssembly.Module.imports(new WebAssembly.Module(wasm)).length!==0)
    fail("guest Wasm host imports forbidden");
