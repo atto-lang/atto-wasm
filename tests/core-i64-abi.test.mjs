@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {mkdtemp,writeFile,readFile,chmod,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
+import {spawnSync} from "node:child_process";
 import {assertCoreI64Entry} from "../scripts/core-i64-abi.mjs";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
 
@@ -53,4 +54,14 @@ test("bridge refuses valid Wasm i32 export even when compiler IR advertises i64"
   await assert.rejects(readFile(output+".artifact.json"),/ENOENT/);
   await assert.rejects(readFile(output+".provenance.json"),/ENOENT/);
  }finally{await rm(dir,{recursive:true,force:true})}
+});
+
+test("duplicate CLI flags cannot silently replace compiler or source provenance",()=>{
+ const script=new URL("../scripts/compile-ores.mjs",import.meta.url).pathname;
+ for(const option of ["compiler","source","output","compiler-sha256"]){
+  const args=["--"+option+"=/first","--"+option+"=/second"];
+  const result=spawnSync(process.execPath,[script,...args],{encoding:"utf8"});
+  assert.notEqual(result.status,0);
+  assert.match(result.stderr,/duplicate CLI option/);
+ }
 });
