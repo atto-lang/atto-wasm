@@ -430,3 +430,52 @@ test("cleanup failure after durable commit returns success with explicit warning
   assert.ok(inventory.staging.some(name=>name.startsWith(".staging-")));
  }finally{await cleanup(w.dir)}
 });
+
+
+test("integration: strict schema admission survives uncertain and confirmed publication",async()=>{
+ const w=await workspace();
+ try{
+  const first=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const alternateSource=join(w.dir,"integrated-next.ores");
+  await writeFile(alternateSource,"pub fnc main(): int { return 41 + 1; }\n");
+  const alternateOutput=join(w.dir,"integrated-next.wasm");
+  await compileOresToWasm({...w,source:alternateSource,output:alternateOutput,
+   environment:"browser",publication:"atomic"});
+  const next=await readAtomicRelease(alternateOutput);
+  const oldPointer=await readFile(w.output+".current.json");
+  assert.notEqual(first.releaseSha256,next.releaseSha256);
+  await assert.rejects(publishAtomicRelease({
+   output:w.output,wasm:next.wasm,provenance:next.provenance,
+   manifest:{...next.manifest,requiredCapabilities:[],unexpectedHostAuthority:true},
+   __testAfterPointerRename:()=>{throw Error("must never reach rename")}
+  }),/inconsistent manifest provenance/);
+  assert.deepEqual(await readFile(w.output+".current.json"),oldPointer);
+  await assert.rejects(publishAtomicRelease({
+   output:w.output,wasm:next.wasm,provenance:next.provenance,
+   manifest:next.manifest,
+   __testAfterPointerRename:()=>{throw Error("injected unconfirmed durability")}
+  }),error=>{
+   assert.ok(error instanceof AtomicReleaseCommitUncertainError);
+   assert.equal(error.code,"ATOMIC_RELEASE_COMMIT_UNCERTAIN");
+   assert.equal(error.releaseSha256,next.releaseSha256);
+   return true;
+  });
+  // Current visibility is a verified release, not a power-loss durability
+  // guarantee. No external operation or blind retry is performed here.
+  const recovered=await readAtomicRelease(w.output);
+  assert.equal(recovered.releaseSha256,next.releaseSha256);
+  assert.deepEqual(recovered.manifest,next.manifest);
+  assert.equal(execute(recovered.wasm),42n);
+  const confirmed=await publishAtomicRelease({
+   output:w.output,wasm:next.wasm,manifest:next.manifest,
+   provenance:next.provenance,
+   __testBeforeCleanup:()=>{throw Error("injected cleanup failure")}
+  });
+  assert.equal(confirmed.releaseSha256,next.releaseSha256);
+  assert.equal(confirmed.cleanupWarning.code,"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED");
+  const state=await inspectAtomicReleaseState(w.output);
+  assert.equal(state.current,next.releaseSha256);
+  assert.ok(state.unreferenced.includes(first.releaseSha256));
+  assert.ok(state.staging.length>0);
+ }finally{await cleanup(w.dir)}
+});
