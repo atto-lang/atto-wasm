@@ -32,6 +32,12 @@ reconcile its current release against the attempted SHA before retrying.
 This inspection proves currently visible verified bytes, not whether a failed
 power-loss durability barrier persisted through a real crash. External effects
 must never be replayed solely because this exception was raised.
+If the pointer fsync **succeeds** but later temporary-directory cleanup fails,
+publication still returns the committed release identity with a
+`cleanupWarning.code = "ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED"`.
+The warning is an operator recovery task, not a transaction rollback. Recovery
+inspection remains read-only, and cleanup must not delete a reader-pinned
+release.
 
 A failed or cancelled compilation before publication never advances the
 pointer. Independent concurrent publishers may race to advance the pointer;
