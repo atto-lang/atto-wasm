@@ -65,35 +65,56 @@ if len(sys.argv) > 2:
             continue
         if isinstance(doc, dict) and isinstance(doc.get("$defs"), dict):
             bundles.append((filename, doc))
-    if not bundles:
-        raise SystemExit("TypeSpec emitter produced no bundled JSON Schema with $defs")
-
     expected_models = {
         "Pointer": "CurrentPointer", "Seal": "ReleaseSeal",
         "Manifest": "CoreWasmManifest", "Provenance": "CompilerProvenance"
     }
-    def find_models(bundle):
-        defs = bundle["$defs"]
-        mapping = {}
-        for kind, suffix in expected_models.items():
-            found = [name for name in defs if name.split(".")[-1] == suffix]
-            if len(found) != 1:
-                return None
-            mapping[kind] = found[0]
-        return mapping
-
-    resolved = [(filename, bundle, find_models(bundle)) for filename, bundle in bundles]
-    selected = [(filename, bundle, models) for filename, bundle, models in resolved
-                if models is not None]
-    if len(selected) != 1:
-        raise SystemExit("expected one TypeSpec bundle with four release models; got " +
-                         repr([(str(f), list(d.get("$defs", {}))) for f, d in bundles]))
-    bundle_file, bundle, model_names = selected[0]
     generated_validators = {}
-    for kind, key in model_names.items():
-        candidate = copy.deepcopy(bundle)
-        candidate["$ref"] = "#/$defs/" + key.replace("~", "~0").replace("/", "~1")
-        generated_validators[kind] = Draft202012Validator(candidate)
+    bundle_file = None
+    if bundles:
+        def find_models(bundle):
+            defs = bundle["$defs"]
+            mapping = {}
+            for kind, suffix in expected_models.items():
+                found = [name for name in defs if name.split(".")[-1] == suffix]
+                if len(found) != 1:
+                    return None
+                mapping[kind] = found[0]
+            return mapping
+        matches = [(path, doc, find_models(doc)) for path, doc in bundles]
+        matches = [(p, d, mapping) for p, d, mapping in matches if mapping is not None]
+        if len(matches) != 1:
+            raise SystemExit("expected one TypeSpec bundle with four release models")
+        bundle_file, bundle, names = matches[0]
+        for kind, name in names.items():
+            doc = copy.deepcopy(bundle)
+            doc["$ref"] = "#/$defs/" + name.replace("~", "~0").replace("/", "~1")
+            generated_validators[kind] = Draft202012Validator(doc)
+    else:
+        # TypeSpec 1.4 emits one schema per named model unless bundling is
+        # configured. Resolve refs only against the emitted local model files:
+        # never download a remote $ref while performing CI validation.
+        from referencing import Registry, Resource
+        docs = {}
+        registry = Registry()
+        files = sorted(generated.rglob("*.json"))
+        for path in files:
+            doc = json.loads(path.read_text())
+            if not isinstance(doc, dict):
+                raise SystemExit(f"unexpected emitted schema payload: {path}")
+            normalized = copy.deepcopy(doc)
+            normalized["$id"] = "https://oreslang.dev/generated/" + path.name
+            docs[path.name] = normalized
+            registry = registry.with_resource(normalized["$id"],
+                                              Resource.from_contents(normalized))
+        for kind, model in expected_models.items():
+            name = model + ".json"
+            if name not in docs:
+                raise SystemExit(f"TypeSpec emitted schema missing {name}; files={sorted(docs)}")
+            generated_validators[kind] = Draft202012Validator(docs[name],
+                                                               registry=registry)
+        bundle_file = f"{len(docs)} emitted separate JSON Schema files"
+
     checks = []
     def case(kind, label, value):
         checks.append((kind, label, copy.deepcopy(value)))
