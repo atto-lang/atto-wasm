@@ -31,12 +31,21 @@ async function safeFile(path,limit){
  if(bytes.length>limit)fail("oversized file");
  return bytes;
 }
-async function safeJSON(path){
- let value;
- try{value=JSON.parse((await safeFile(path,16384)).toString("utf8"))}
- catch{fail("invalid JSON file")}
- if(!value||typeof value!=="object"||Array.isArray(value))fail("invalid JSON object");
- return value;
+// Verify the exact bytes before interpreting the seal. Unlike JSON.parse,
+// byte-canonical validation rejects duplicate keys, alternate whitespace,
+// field reordering and invalid UTF-8 that other runtimes may parse differently.
+function parseCanonicalSeal(bytes){
+ let seal;
+ try{seal=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes))}
+ catch{fail("invalid release seal JSON")}
+ if(!seal||typeof seal!=="object"||Array.isArray(seal)||
+    !bytes.equals(canonical(seal))||
+    Object.keys(seal).join(",")!=="schemaVersion,type,fileHashes"||
+    !seal.fileHashes||typeof seal.fileHashes!=="object"||
+    Array.isArray(seal.fileHashes)||
+    Object.keys(seal.fileHashes).join(",")!=="wasm,manifest,provenance")
+   fail("noncanonical release seal");
+ return seal;
 }
 function descriptorFor(wasm,manifest,provenance){
  if(wasm.length<8||wasm.length>16777216)fail("Wasm budget");
@@ -82,7 +91,7 @@ async function verifyDir(dir,id){
  if(!hex(id))fail("invalid identity");
  const st=await lstat(dir);
  if(!st.isDirectory()||st.isSymbolicLink())fail("release is not a real directory");
- const seal=await safeJSON(join(dir,"seal.json"));
+ const seal=parseCanonicalSeal(await safeFile(join(dir,"seal.json"),16384));
  if(seal.schemaVersion!==1||seal.type!=="oreslang.atomic-release-v1"||
     !hex(seal.fileHashes?.wasm)||!hex(seal.fileHashes?.provenance)||
     !(seal.fileHashes.manifest===null||hex(seal.fileHashes.manifest))||
