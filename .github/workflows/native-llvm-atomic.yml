@@ -41,8 +41,15 @@ jobs:
           print("PASS",len(pins),"exact private LLVM and .ores source blob pins")
           PY
       - name: Build native LLVM Oreslang compiler from pinned source
+        shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install -y build-essential cmake clang lld llvm-dev
+          set -euo pipefail
+          # Resolve only the declared direct package versions; fail closed if
+          # the Ubuntu repository no longer offers the audited versions.
+          read -r -a apt_packages <<< "$(python3 scripts/verify-native-toolchain-lock.py install-args)"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${apt_packages[@]}"
+          python3 scripts/verify-native-toolchain-lock.py verify
           cmake -S tests/fixtures/pinned-llvm -B build/source-llvm -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
           cmake --build build/source-llvm --parallel 2
           test -x build/source-llvm/oreslang-llvmc
@@ -94,11 +101,21 @@ jobs:
             build/source-llvm/oreslang-llvmc \
             build/native-toolchain-attestation.json
           python3 -m json.tool build/native-toolchain-attestation.json > /dev/null
-          sha256sum build/native-toolchain-attestation.json
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          audit=json.loads(pathlib.Path("build/native-toolchain-attestation.json").read_text())
+          graph=pathlib.Path("build/native-installed-packages.txt").read_bytes()
+          assert hashlib.sha256(graph).hexdigest()==audit["installedDpkgGraphSha256"]
+          assert len(graph.splitlines())==audit["installedDpkgPackageCount"]
+          print("PASS native full package graph verified",audit["installedDpkgPackageCount"])
+          PY
+          sha256sum build/native-toolchain-attestation.json build/native-installed-packages.txt
       - name: Preserve exact-build native toolchain observation
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-wasm-toolchain-attestation
-          path: build/native-toolchain-attestation.json
+          path: |
+            build/native-toolchain-attestation.json
+            build/native-installed-packages.txt
           if-no-files-found: error
           retention-days: 30

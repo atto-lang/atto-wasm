@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "kind": "oreslang.native-wasm-ubuntu-2404-direct-packages-v1",
+  "runner": "ubuntu-24.04",
+  "architecture": "amd64",
+  "packages": {
+    "build-essential": "12.10ubuntu1",
+    "cmake": "3.28.3-1build7",
+    "clang": "1:18.0-59~exp2",
+    "lld": "1:18.0-59~exp2",
+    "llvm-dev": "1:18.0-59~exp2"
+  },
+  "note": "Direct apt package version admission only; transitive deb packages, base image and C/C++ linker outputs remain outside full reproducibility guarantee."
+}

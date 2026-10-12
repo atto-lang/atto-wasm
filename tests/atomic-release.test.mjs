@@ -482,9 +482,15 @@ test("integration: strict schema admission survives uncertain and confirmed publ
 });
 
 
-test("process termination at three publication barriers never exposes a partial release",async()=>{
+test("SIGKILL at five publication barriers never selects an incomplete release",async()=>{
  const moduleURL=new URL("../scripts/atomic-release.mjs",import.meta.url).href;
- for(const checkpoint of ["__testAfterReleaseInstall","__testAfterPointerRename","__testBeforeCleanup"]){
+ for(const checkpoint of [
+  "__testAfterReleaseRename",
+  "__testAfterReleaseInstall",
+  "__testBeforePointerRename",
+  "__testAfterPointerRename",
+  "__testBeforeCleanup"
+ ]){
   const w=await workspace();
   try{
    const initial=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
@@ -511,7 +517,12 @@ test("process termination at three publication barriers never exposes a partial 
    assert.equal(child.signal,"SIGKILL",
     checkpoint+": child did not terminate at checkpoint; stderr="+child.stderr);
    const verified=await readAtomicRelease(w.output);
-   const beforeRename=checkpoint==="__testAfterReleaseInstall";
+   // All three earlier barriers predate the pointer's rename/visibility.
+   const beforeRename=[
+    "__testAfterReleaseRename",
+    "__testAfterReleaseInstall",
+    "__testBeforePointerRename"
+   ].includes(checkpoint);
    assert.equal(verified.releaseSha256,
     beforeRename?initial.releaseSha256:alternate.releaseSha256);
    assert.equal(execute(verified.wasm),42n);
