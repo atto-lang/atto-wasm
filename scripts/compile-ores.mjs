@@ -75,6 +75,17 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
     throw Error("output or artifact metadata path overlaps a compiler/source input");
   }catch(error){if(error?.code!=="ENOENT")throw error}
  }
+ // Fail closed if this destination already uses the other publication
+ // protocol. Otherwise old sidecars and an atomic pointer could disagree.
+ const conflicting=publication==="atomic"?
+   [published,published+".artifact.json",published+".provenance.json"]:
+   [published+".current.json",published+".releases"];
+ for(const path of conflicting){
+  try{
+   await stat(path);
+   throw Error("legacy and atomic artifact publications cannot share an output path");
+  }catch(error){if(error.code!=="ENOENT")throw error}
+ }
  const [sourceBytes,compilerBytes]=await Promise.all([readFile(sourcePath),readFile(compilerPath)]);
  if(sourceBytes.length>MAX_SOURCE_BYTES)throw Error("source exceeds 1 MiB compiler bridge budget");
  if(compilerBytes.length>MAX_COMPILER_BYTES)throw Error("compiler exceeds 256 MiB executable budget");
