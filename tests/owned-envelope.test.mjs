@@ -185,3 +185,64 @@ test("a sparse list cannot bypass the global zero-byte value visit budget",async
   variant:"EmptyTuples",fields:{items:sparse}
  }),/sparse array\/list element/);
 });
+
+test("schema contracts never inherit authority, including deeply nested list bounds",async()=>{
+ const input={variant:"Compute",fields:{text:"x",n:42n}};
+ const missing={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Compute",fields:[{name:"text",type:{list:{element:"string"}}}]
+ }]};
+ // In particular, an inherited maxLength may appear valid to bound().
+ Object.defineProperty(Object.prototype,"maxLength",{configurable:true,value:3});
+ let pending;
+ try{pending=encodeMessage(missing,input);}
+ finally{delete Object.prototype.maxLength;}
+ await assert.rejects(pending,/invalid list shape/);
+
+ const schema={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Empty",fields:[{name:"x",type:{enum:[{id:1,name:"None",payload:null}]}}]
+ }]};
+ const ownValue={variant:"Empty",fields:{x:{variant:"None",value:null}}};
+ const bytes=await encodeMessage(schema,ownValue);
+ assert.equal((await decodeMessage(schema,bytes)).fields.x.value,null);
+ Object.defineProperty(Object.prototype,"value",{configurable:true,value:null});
+ try{pending=encodeMessage(schema,{variant:"Empty",fields:{x:{variant:"None"}}});}
+ finally{delete Object.prototype.value;}
+ await assert.rejects(pending,/invalid enum value shape/);
+});
+
+test("schema node arrays must have dense own indices, including empty byte layouts",async()=>{
+ const msg={variant:"Single",fields:{value:2n}};
+ const valid={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Single",fields:[{name:"value",type:"i64"}]
+ }]};
+ const enc=await encodeMessage(valid,msg);
+ const sparseVariants={...valid,variants:new Array(1)};
+ const sparseFields={...valid,variants:[{...valid.variants[0],fields:new Array(1)}]};
+ const sparseTuple={...valid,variants:[{...valid.variants[0],fields:[
+  {name:"value",type:{tuple:new Array(1)}}
+ ]}]};
+ const sparseEnum={...valid,variants:[{...valid.variants[0],fields:[
+  {name:"value",type:{enum:new Array(1)}}
+ ]}]};
+ for(const [bad,diagnostic] of [
+  [sparseVariants,/sparse variants/],
+  [sparseFields,/sparse fields/],
+  [sparseTuple,/sparse tuple types/],
+  [sparseEnum,/sparse enum variants/]
+ ]){
+  await assert.rejects(encodeMessage(bad,msg),diagnostic);
+  await assert.rejects(decodeMessage(bad,enc),diagnostic);
+ }
+});
+
+test("an accessor cannot redefine schema hash fields during normalization",async()=>{
+ let reads=0;
+ const list={element:"i64"};
+ Object.defineProperty(list,"maxLength",{enumerable:true,configurable:true,
+  get(){reads++;return 1;}});
+ const schema={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Accessor",fields:[{name:"v",type:{list}}]
+ }]};
+ await assert.rejects(encodeMessage(schema,{variant:"Accessor",fields:{v:[1n]}}),/invalid list shape/);
+ assert.equal(reads,0,"accessor must never run in ABI normalization");
+});
