@@ -14,8 +14,17 @@ const prim=new Set(["string","i64","bool","bytes"]);
 const plain=x=>x!==null&&typeof x==="object"&&[Object.prototype,null].includes(Object.getPrototypeOf(x));
 const fail=reason=>{throw new TypeError("Oreslang envelope: "+reason)};
 function shape(x,keys,name){
- if(!plain(x)||Reflect.ownKeys(x).some(k=>typeof k!=="string"||!keys.includes(k)))
-  fail("invalid "+name+" shape");
+ if(!plain(x))fail("invalid "+name+" shape");
+ // Validate descriptors before reading ANY data. A getter could otherwise
+ // authorize one schema while the later hash/serializer observes another.
+ // Reflect.ownKeys also catches hidden and symbol-bearing properties.
+ for(const key of Reflect.ownKeys(x)){
+  if(typeof key!=="string"||!keys.includes(key))
+   fail("invalid "+name+" shape");
+  const descriptor=Object.getOwnPropertyDescriptor(x,key);
+  if(!descriptor||!descriptor.enumerable||!Object.hasOwn(descriptor,"value"))
+   fail("invalid "+name+" shape");
+ }
 }
 // Every key hashed into the ABI must be an own enumerable data property.
 // Otherwise Object.prototype pollution or accessors can inject authority.
@@ -28,9 +37,18 @@ function requiredShape(x,keys,name){
     }))fail("invalid "+name+" shape");
 }
 function dense(items,name){
- if(!Array.isArray(items))fail("invalid "+name);
- for(let i=0;i<items.length;i++)
-  if(!Object.hasOwn(items,i))fail("sparse "+name);
+ if(!Array.isArray(items)||![Array.prototype,null].includes(Object.getPrototypeOf(items)))
+  fail("invalid "+name);
+ // A numeric getter, custom non-index attribute, or symbol key must never
+ // change the normalized hash or bypass a zero-byte element accounting visit.
+ const props=Reflect.ownKeys(items);
+ if(props.length!==items.length+1)fail("invalid "+name+" shape");
+ for(let i=0;i<items.length;i++){
+  const descriptor=Object.getOwnPropertyDescriptor(items,String(i));
+  if(!descriptor)fail("sparse "+name);
+  if(!descriptor.enumerable||!Object.hasOwn(descriptor,"value"))
+   fail("invalid "+name+" element");
+ }
 }
 function unique(a,label){if(new Set(a).size!==a.length)fail("duplicate "+label);}
 function name(x){if(typeof x!=="string"||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(x))fail("invalid name");return x;}
@@ -139,14 +157,9 @@ function encode(w,t,x,d=0){
  if(Object.hasOwn(t,"array")||Object.hasOwn(t,"list")){
   const fixed=Object.hasOwn(t,"array"),spec=fixed?t.array:t.list;
   if(!Array.isArray(x)||(fixed?x.length!==spec.length:x.length>spec.maxLength))fail("array/list length");
+  dense(x,"array/list element");
   if(!fixed)w.u32(x.length);
-  // Array.forEach skips sparse holes. With a zero-byte element type this
-  // would silently encode fewer values than the declared length, defeating
-  // node budgets and canonical typed-message round trips.
-  for(let i=0;i<x.length;i++){
-   if(!Object.hasOwn(x,i))fail("sparse array/list element");
-   encode(w,spec.element,x[i],d+1);
-  }
+  for(let i=0;i<x.length;i++)encode(w,spec.element,x[i],d+1);
   return;
  }
  requiredShape(x,["variant","value"],"enum value");
@@ -184,10 +197,9 @@ function budget(n){if(!Number.isSafeInteger(n)||n<HEADER||n>LIMIT)fail("invalid 
 export async function encodeMessage(schema,message,{maxBytes=LIMIT}={}){
  budget(maxBytes);
  const c=contract(schema);
- shape(message,["variant","fields"],"message");
+ requiredShape(message,["variant","fields"],"message");
  const v=c.variants.find(x=>x.name===message.variant);if(!v)fail("unknown message variant");
- shape(message.fields,v.fields.map(x=>x.name),"message fields");
- if(Object.keys(message.fields).length!==v.fields.length)fail("missing message field");
+ requiredShape(message.fields,v.fields.map(x=>x.name),"message fields");
  const w=new Writer(maxBytes-HEADER);for(const f of v.fields)encode(w,f.type,message.fields[f.name]);
  // Payload bytes and normalized schema are snapshotted before any await.
  const payload=w.finish(),hash=await digest(c);
