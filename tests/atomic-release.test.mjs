@@ -5,7 +5,7 @@ import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename} from "node:fs/
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
-import {publishAtomicRelease,readAtomicRelease,inspectAtomicReleaseState} from "../scripts/atomic-release.mjs";
+import {publishAtomicRelease,readAtomicRelease,inspectAtomicReleaseState,AtomicReleaseCommitUncertainError} from "../scripts/atomic-release.mjs";
 
 async function workspace(){
  const dir=await mkdtemp(join(tmpdir(),"oreslang-atomic-release-"));
@@ -286,5 +286,83 @@ test("duplicate-key or noncanonical current pointer never selects a release",asy
   }
   await writeFile(pointer,canonical);
   assert.equal((await readAtomicRelease(w.output)).releaseSha256,release.releaseSha256);
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("failure before pointer rename keeps the previous release selected",async()=>{
+ const w=await workspace();
+ try{
+  const first=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const alternateSource=join(w.dir,"next-source.ores");
+  await writeFile(alternateSource,"pub fnc main(): int { return 40 + 2; }\n");
+  const secondOutput=join(w.dir,"alternate.wasm");
+  await compileOresToWasm({...w,source:alternateSource,output:secondOutput,
+    environment:"browser",publication:"atomic"});
+  const alt=await readAtomicRelease(secondOutput);
+  assert.notEqual(first.releaseSha256,alt.releaseSha256);
+  const prior=await readFile(w.output+".current.json");
+  await assert.rejects(publishAtomicRelease({
+   output:w.output,wasm:alt.wasm,manifest:alt.manifest,provenance:alt.provenance,
+   __testAfterReleaseInstall:()=>{throw Error("simulated pre-pointer failure")}
+  }),/simulated pre-pointer failure/);
+  assert.deepEqual(await readFile(w.output+".current.json"),prior);
+  const inventory=await inspectAtomicReleaseState(w.output);
+  assert.equal(inventory.current,first.releaseSha256);
+  assert.ok(inventory.unreferenced.includes(alt.releaseSha256));
+ }finally{await cleanup(w.dir)}
+});
+
+test("post-rename sync failure reports uncertain commit, never ordinary abort",async()=>{
+ const w=await workspace();
+ try{
+  const first=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const altSource=join(w.dir,"alt.ores");
+  await writeFile(altSource,"pub fnc main(): int { return 41 + 1; }\n");
+  const altOutput=join(w.dir,"alt.wasm");
+  await compileOresToWasm({...w,source:altSource,output:altOutput,
+    environment:"browser",publication:"atomic"});
+  const second=await readAtomicRelease(altOutput);
+  assert.notEqual(first.releaseSha256,second.releaseSha256);
+  await assert.rejects(publishAtomicRelease({
+   output:w.output,wasm:second.wasm,manifest:second.manifest,
+   provenance:second.provenance,
+   __testAfterPointerRename:()=>{throw Error("simulated pointer-parent fsync failure")}
+  }),error=>{
+   assert.ok(error instanceof AtomicReleaseCommitUncertainError);
+   assert.equal(error.code,"ATOMIC_RELEASE_COMMIT_UNCERTAIN");
+   assert.equal(error.releaseSha256,second.releaseSha256);
+   assert.equal(error.pointer,w.output+".current.json");
+   assert.equal(error.mayBePublished,true);
+   assert.match(String(error.cause),/simulated pointer-parent fsync failure/);
+   return true;
+  });
+  // The pointer was visible despite the returned error. A caller must inspect,
+  // not assume rollback or retry a non-idempotent external side effect.
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,second.releaseSha256);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("cleanup failure after durable commit returns success with explicit warning",async()=>{
+ const w=await workspace();
+ try{
+  const baseline=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const previous=(await readFile(w.output+".current.json")).toString("utf8");
+  const checked=await readAtomicRelease(w.output);
+  const result=await publishAtomicRelease({
+   output:w.output,wasm:checked.wasm,
+   manifest:checked.manifest,provenance:checked.provenance,
+   __testBeforeCleanup:()=>{throw Error("injected temporary-directory cleanup failure")}
+  });
+  assert.equal(result.releaseSha256,baseline.releaseSha256);
+  assert.equal(result.cleanupWarning.code,"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED");
+  assert.match(result.cleanupWarning.message,/injected temporary-directory cleanup failure/);
+  assert.equal((await readFile(w.output+".current.json")).toString("utf8"),previous);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
+  const inventory=await inspectAtomicReleaseState(w.output);
+  assert.equal(inventory.current,baseline.releaseSha256);
+  assert.ok(inventory.staging.some(name=>name.startsWith(".staging-")));
  }finally{await cleanup(w.dir)}
 });
