@@ -10,6 +10,7 @@ import {dirname,resolve,isAbsolute,join,basename} from "node:path";
 import {fileURLToPath} from "node:url";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
 import {inspectWasmBytes} from "./inspect-core-memory.mjs";
+import {publishAtomicRelease} from "./atomic-release.mjs";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
 const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES=16*1024*1024;
@@ -36,7 +37,7 @@ function run(command,args,{input}={}){
  if(output.error||output.status!==0||output.signal)throw Error("command failed ("+command+"): "+(output.error?.message||output.stderr||"exit "+output.status).slice(0,4000));
  return output.stdout||"";
 }
-export async function compileOresToWasm({compiler,source,output,exportName="main",clang=process.env.CLANG||"clang",compilerSha256,environment}){
+export async function compileOresToWasm({compiler,source,output,exportName="main",clang=process.env.CLANG||"clang",compilerSha256,environment,publication="legacy"}){
  absolute(compiler,"compiler");
  absolute(source,"source");
  absolute(output,"output");
@@ -50,7 +51,8 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  ]);
  const published=join(outputParent,basename(output));
  const protectedInputs=new Set([sourcePath,compilerPath]);
- for(const destination of [published,published+".provenance.json",published+".artifact.json"]){
+ if(!["atomic","legacy"].includes(publication))throw Error("invalid artifact publication mode");
+ for(const destination of [published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases"]){
   if(protectedInputs.has(destination))
    throw Error("output or artifact metadata path overlaps a compiler/source input");
  }
@@ -65,7 +67,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  // A destination that already exists might itself be a symlink or hard link
  // to an input. Reject by inode identity before publishing over the link.
  // Merely canonicalizing its parent directory does not catch this case.
- for(const destination of [published,published+".provenance.json",published+".artifact.json"]){
+ for(const destination of [published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases"]){
   try{
    const existing=await stat(destination);
    if([sourceStat,compilerStat].some(input=>
@@ -140,8 +142,9 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   clangVersion:run(clang,["--version"]).split("\n")[0],
   note:"Binary provenance: exact compiler executable bytes, not proof of source-repository commit or feature parity."
  };
+ let manifest=null;
  if(environment){
-  const manifest={
+  manifest={
    schemaVersion:1,artifactType:"oreslang.core-wasm.i64-v1",
    target:"wasm32",environment,backend:"wasm",entry:exportName,
    wasmSha256:sha(wasm),wasmBytes:wasm.length,requiredCapabilities:[],
@@ -152,6 +155,15 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   await writeFile(join(scratch,"artifact.json"),JSON.stringify(manifest,null,2)+"\n");
  }
  await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
+ if(publication==="atomic"){
+  // The content-addressed release is privately staged and sealed first.
+  // Only a single pointer rename makes it visible to verified readers.
+  const publishedRelease=await publishAtomicRelease({
+   output:published,wasm,manifest,provenance:record
+  });
+  return {...record,releaseSha256:publishedRelease.releaseSha256,
+   publication:"atomic",pointer:publishedRelease.pointer};
+ }
  // Publish metadata first; never expose a new executable after metadata
  // publication failed. Consumers must still SHA-check all sidecars: separate
  // files cannot be atomically committed as one transaction.
@@ -166,7 +178,7 @@ if(calledFromCli){
  try{
   const usedOptions=new Set();
   const options=Object.fromEntries(process.argv.slice(2).map(x=>{
-   const m=/^--(compiler|source|output|export|clang|compiler-sha256|environment)=(.*)$/.exec(x);
+   const m=/^--(compiler|source|output|export|clang|compiler-sha256|environment|publication)=(.*)$/.exec(x);
    if(!m)throw Error("unexpected CLI option: "+x);
    if(usedOptions.has(m[1]))throw Error("duplicate CLI option: "+m[1]);
    usedOptions.add(m[1]);
@@ -176,7 +188,7 @@ if(calledFromCli){
    compiler:options.compiler,source:options.source,
    output:options.output||resolve(projectRoot,"build/guest.wasm"),
    exportName:options.export||"main",clang:options.clang||process.env.CLANG||"clang",
-   compilerSha256:options["compiler-sha256"],environment:options.environment
+   compilerSha256:options["compiler-sha256"],environment:options.environment,publication:options.publication||"legacy"
   });
   console.log(JSON.stringify(record,null,2));
  }catch(error){console.error(error.stack||error.message);process.exitCode=1}
