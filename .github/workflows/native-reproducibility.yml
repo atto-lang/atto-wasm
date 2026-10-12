@@ -1,0 +1,111 @@
+name: Independent native compiler and Wasm reproducibility
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-rebuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Record and validate complete source tree
+        run: bash scripts/verify-source-tree.sh
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install locked compiler packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_native_toolchain_lock.py' -v
+          read -r -a packages <<< "$(python3 scripts/verify-native-toolchain-lock.py install-args)"
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
+          python3 scripts/verify-native-toolchain-lock.py verify
+      - name: Independently compile native compiler from identical source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tests/fixtures/pinned-llvm -B build/source-llvm -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build/source-llvm --parallel 2
+          test -x build/source-llvm/oreslang-llvmc
+      - name: Independently compile and execute two sealed Wasm guests
+        shell: bash
+        run: |
+          set -euo pipefail
+          compiler="$(realpath build/source-llvm/oreslang-llvmc)"
+          sha="$(sha256sum "$compiler" | cut -d' ' -f1)"
+          for spec in "examples/native-int.ores:42" "tests/fixtures/native-int-43.ores:43"; do
+            src="${spec%:*}"
+            expected="${spec##*:}"
+            node scripts/compile-ores.mjs \
+              "--compiler=$compiler" "--compiler-sha256=$sha" \
+              "--source=$(realpath "$src")" \
+              "--output=$PWD/build/repro-$expected.wasm" \
+              "--clang=/usr/bin/clang" "--environment=browser" \
+              "--publication=atomic"
+          done
+          node --input-type=module - <<'JS'
+          import assert from 'node:assert/strict';
+          import {readAtomicRelease} from './scripts/atomic-release.mjs';
+          for(const expected of [42n,43n]){
+            const r=await readAtomicRelease('build/repro-'+expected+'.wasm');
+            const actual=new WebAssembly.Instance(new WebAssembly.Module(r.wasm)).exports.main();
+            assert.equal(actual,expected);
+          }
+          console.log('REPRO_GUESTS_EXECUTED_AND_VERIFIED');
+          JS
+      - name: Emit source- and artifact-bound reproducibility receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/record-native-repro.py ${{ matrix.replica }} build/native-repro
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-repro-${{ matrix.replica }}
+          path: build/native-repro/native-${{ matrix.replica }}.json
+          retention-days: 30
+          if-no-files-found: error
+  native-repro-compare:
+    needs: native-rebuild
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify source tree before comparison
+        run: bash scripts/verify-source-tree.sh
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-repro-*
+          path: build/independent
+          merge-multiple: true
+      - name: Compare independent compiler, Wasm, and toolchain evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib,subprocess,hashlib
+          folder=pathlib.Path('build/independent')
+          if sorted(p.name for p in folder.iterdir())!=['native-a.json','native-b.json']:
+              raise SystemExit('missing/extra independent rebuild attestation')
+          a=json.loads((folder/'native-a.json').read_text())
+          b=json.loads((folder/'native-b.json').read_text())
+          tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip()
+          if a!=b or a['sourceTree']!=tree:
+              for key in sorted(set(a)|set(b)):
+                  if a.get(key)!=b.get(key):
+                      print('NONREPRODUCIBLE_FIELD',key,a.get(key),b.get(key))
+              raise SystemExit('independent native compiler or Wasm build disagrees')
+          if len(a['guests'])!=2 or [g['expectedI64'] for g in a['guests']]!=[42,43]:
+              raise SystemExit('unexpected independent Wasm release evidence')
+          print('PASS_INDEPENDENT_NATIVE_IDENTICAL',a['nativeCompilerSha256'])
+          print('PASS_INDEPENDENT_SEALED_WASM_IDENTICAL',a['guests'])
+          print('INDEPENDENT_REPRO_SOURCE_TREE',tree)
+          PY
