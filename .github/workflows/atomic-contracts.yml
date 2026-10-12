@@ -21,7 +21,14 @@ jobs:
         run: node scripts/generate-atomic-contract-fixtures.mjs "$RUNNER_TEMP/atomic-contract-fixtures"
       - name: Validate actual pointer, seal, manifest and provenance with JSON Schema
         run: python3 scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures"
-      - name: Validate the TypeSpec source interface
+      - name: Emit and validate the TypeSpec release schema
         run: |
-          npm install --no-save --package-lock=false '@typespec/compiler@1.4.0'
-          npx tsp compile contracts/atomic-release.tsp --no-emit
+          npm install --no-save --package-lock=false '@typespec/compiler@1.4.0' '@typespec/json-schema@1.4.0'
+          npx tsp compile contracts/atomic-release.tsp \
+            --emit=@typespec/json-schema \
+            --output-dir="$RUNNER_TEMP/atomic-typespec-emitted" \
+            --option '@typespec/json-schema.file-type=json' \
+            --option '@typespec/json-schema.bundleId=https://oreslang.dev/schemas/atomic-typespec-bundle.json' \
+            --option '@typespec/json-schema.seal-object-schemas=true'
+      - name: Differential conformance of normative and emitted JSON Schema
+        run: python3 scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures" "$RUNNER_TEMP/atomic-typespec-emitted"
