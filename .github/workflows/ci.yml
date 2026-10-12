@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   wasm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Verify pristine Git checkout and record complete tree identity
@@ -15,6 +15,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
-      - name: Install wasm32 toolchain
-        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - name: Install version-locked wasm32 compiler tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r -a apt_packages <<< "$(python3 scripts/verify-native-toolchain-lock.py install-args clang lld)"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${apt_packages[@]}"
+          python3 scripts/verify-native-toolchain-lock.py verify clang lld
       - run: npm test
