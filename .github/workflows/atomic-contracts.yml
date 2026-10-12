@@ -16,14 +16,25 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
-      - name: Install wasm32 compiler and schema verifier
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.15'
+      - name: Install wasm32 compiler toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - name: Install SHA-256 hash-locked Python schema verifier
+        shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install -y clang lld
-          python3 -m pip install --break-system-packages 'jsonschema==4.25.1'
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/atomic-schema-venv"
+          "$RUNNER_TEMP/atomic-schema-venv/bin/python" -m pip install \
+            --disable-pip-version-check --no-input --require-hashes \
+            -r contracts/python-requirements.lock
+          "$RUNNER_TEMP/atomic-schema-venv/bin/python" -m pip check
+          "$RUNNER_TEMP/atomic-schema-venv/bin/python" -c 'import jsonschema; from jsonschema import Draft202012Validator; print("HASHED_JSONSCHEMA_VERIFIER_OK",len(Draft202012Validator.VALIDATORS))'
       - name: Compile real Wasm from fixture LLVM and seal an atomic release
         run: node scripts/generate-atomic-contract-fixtures.mjs "$RUNNER_TEMP/atomic-contract-fixtures"
       - name: Validate actual pointer, seal, manifest and provenance with JSON Schema
-        run: python3 scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures"
+        run: "$RUNNER_TEMP/atomic-schema-venv/bin/python" scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures"
       - name: Emit and validate the TypeSpec release schema
         run: |
           npm ci --ignore-scripts --no-fund --no-audit
@@ -49,4 +60,4 @@ jobs:
                     "id",doc.get("$id"))
           PY
       - name: Differential conformance of normative and emitted JSON Schema
-        run: python3 scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures" build/atomic-typespec-emitted
+        run: "$RUNNER_TEMP/atomic-schema-venv/bin/python" scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures" build/atomic-typespec-emitted
