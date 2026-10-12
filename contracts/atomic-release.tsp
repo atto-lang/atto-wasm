@@ -12,6 +12,7 @@ namespace Oreslang.AtomicRelease;
 @pattern("^[0-9a-f]{64}$")
 scalar Sha256 extends string;
 
+@jsonSchema
 model CurrentPointer {
   schemaVersion: 1;
   releaseSha256: Sha256;
@@ -23,6 +24,7 @@ model FileDigests {
   provenance: Sha256;
 }
 
+@jsonSchema
 model ReleaseSeal {
   schemaVersion: 1;
   type: "oreslang.atomic-release-v1";
@@ -39,6 +41,7 @@ model CoreMemory {
   maximumPages: 2;
 }
 
+@jsonSchema
 model CoreWasmManifest {
   schemaVersion: 1;
   artifactType: "oreslang.core-wasm.i64-v1";
@@ -58,6 +61,7 @@ model CoreWasmManifest {
   producer: ProducerIdentity;
 }
 
+@jsonSchema
 model CompilerProvenance {
   schemaVersion: 1;
   kind: "llvm-ores-to-wasm32-core-experimental";
