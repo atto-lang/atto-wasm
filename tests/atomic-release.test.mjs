@@ -658,3 +658,31 @@ test("FIFO pointer cannot block atomic release reader before type verification",
   assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
  }finally{await cleanup(w.dir)}
 });
+
+
+test("dangling publication symlink entries never bypass mixed-mode exclusion",async()=>{
+ for(const {mode,conflict} of [
+  {mode:"atomic",conflict:""},
+  {mode:"atomic",conflict:".artifact.json"},
+  {mode:"atomic",conflict:".provenance.json"},
+  {mode:"legacy",conflict:".current.json"},
+  {mode:"legacy",conflict:".releases"}
+ ]){
+  const w=await workspace();
+  try{
+   const occupied=w.output+conflict;
+   // The target is absent; stat() reports ENOENT even though this path is
+   // occupied by a symlink and publishing would cross format boundaries.
+   await symlink(join(w.dir,"nonexistent-conflict-target"),occupied);
+   await assert.rejects(
+    compileOresToWasm({...w,publication:mode,environment:"browser"}),
+    /legacy and atomic artifact publications cannot share an output path/,
+    mode+" should reject "+conflict
+   );
+   // A rejected format migration must leave the preexisting symlink alone.
+   const entry=(await import("node:fs/promises")).lstat;
+   assert.ok((await entry(occupied)).isSymbolicLink());
+   await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+  }finally{await cleanup(w.dir)}
+ }
+});
