@@ -211,7 +211,8 @@ export async function publishAtomicRelease({
  output,wasm,manifest=null,provenance,
  // Test-only fault hooks run AFTER genuine IO barriers. They can only cause
  // a failure, never suppress fsync or alter the contents being sealed.
- __testAfterReleaseInstall,__testAfterPointerRename,__testBeforeCleanup
+ __testAfterReleaseInstall,__testAfterReleaseRename,__testBeforePointerRename,
+ __testAfterPointerRename,__testBeforeCleanup
 }){
  if(typeof output!=="string"||!output)fail("missing output");
  if(isProxy(wasm)||!(wasm instanceof Uint8Array))fail("invalid Wasm bytes");
@@ -246,6 +247,10 @@ export async function publishAtomicRelease({
   }
   // Reject preexisting conflicting/replaced content, even if name matches.
   await verifyDir(destinationDir,releaseSha256);
+  // Once renamed, the release may be visible but is never selected until
+  // its directory entry is synchronized and the pointer is renamed.
+  // This hook simulates failure *before* the release-root fsync.
+  if(__testAfterReleaseRename)await __testAfterReleaseRename();
   // Release directory entry becomes durable before we expose its identity.
   await fsyncDirectory(root);
   if(__testAfterReleaseInstall)await __testAfterReleaseInstall();
@@ -253,6 +258,9 @@ export async function publishAtomicRelease({
   const temporaryPointer=join(pointerDir,"current.json");
   await durableWrite(temporaryPointer,canonical({schemaVersion:1,releaseSha256}));
   await fsyncDirectory(pointerDir);
+  // A pre-pointer-rename failure is an ordinary abort: no new identity
+  // became visible. The installed sealed release remains as an orphan.
+  if(__testBeforePointerRename)await __testBeforePointerRename();
   await rename(temporaryPointer,pointer);
   // The pointer is already visible here, even if the next sync fails.
   // A retrying caller must NOT assume that the previous pointer remains.

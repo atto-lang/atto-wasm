@@ -53,3 +53,48 @@ durability guarantee.
 
 See GitHub issues #23 (governance), #25 (dependency audit), and
 `ores-truffle-oreslang/oreslang-platform-conformance` issue #19.
+
+
+## Hash-locked Python verifier
+
+`contracts/python-requirements.lock` pins the Python Draft 2020-12 JSON
+Schema validator and its transitive dependencies by exact versions plus
+download SHA-256 hashes. The lock was compiled and successfully installed in
+a funded Ubuntu 24.04 runner with a Python 3.12 environment. Contracts CI
+uses the immutable `actions/setup-python` v5.6.0 Git commit for CPython
+3.12.15, provisions an isolated virtual environment, and runs
+`pip install --require-hashes`. No unpinned Python dependency resolution is
+allowed in this verification job. The lock carries hashes for several
+platform distributions; a new target platform must be independently tested.
+
+## Native toolchain observations
+
+The native LLVM workflow SHA-pins its own Oreslang compiler source blobs and
+now writes `build/native-toolchain-attestation.json`, recording the source
+commit and tree, built compiler SHA-256, installed Ubuntu package versions,
+resolved Clang/CMake executable SHA-256 and versions, and the two verified
+sealed Wasm output identities. The CI workflow uploads this evidence as
+`native-wasm-toolchain-attestation` for 30 days.
+
+The attestation is deliberately labelled an **observation**, not a signed
+provenance, deterministic-build proof, or guarantee against a compromised
+runner. The LLVM/Clang packages are installed from live Ubuntu repositories
+and their exact versions are *recorded* rather than hard pinned. Fully
+reproducible native builds still require a digest-pinned OCI image or fixed
+package repository snapshot and independent rebuild comparisons.
+
+## Durability fault coverage
+
+The Node tests inject exceptions at three ordered boundaries: immediately
+after release-directory rename but before release-root `fsync`, after
+temporary-pointer `fsync` but before pointer rename, and after pointer
+rename but before pointer-parent `fsync`. The first two may leave
+independently verified unreferenced release directories but **must not**
+advance the selected pointer. The last is an uncertain outcome that carries
+the attempted release identity, cannot be translated into ordinary abort,
+and must be reconciled by a verified read.
+
+These deterministic injections exercise API state/error invariants only.
+They **do not** simulate a real block device cache, an unclean VM reset, or
+hardware power loss. Physical fault/recovery qualification remains a separate
+mandatory release-hardening milestone.

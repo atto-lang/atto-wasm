@@ -727,3 +727,63 @@ test("publisher rejects Proxy-backed metadata and Wasm without triggering traps"
   }
  }finally{await cleanup(w.dir)}
 });
+
+
+test("fault matrix brackets both directory fsync and pointer rename without false rollback",async()=>{
+ const w=await workspace();
+ try{
+  const baseline=await compileOresToWasm({
+   ...w,publication:"atomic",environment:"browser"
+  });
+  const original=await readAtomicRelease(w.output);
+  const selected=await readFile(w.output+".current.json");
+  let trapped=0;
+  for(const [name,hook] of [
+   ["installed release rename but before release-root fsync","__testAfterReleaseRename"],
+   ["durable temporary pointer but before pointer rename","__testBeforePointerRename"]
+  ]){
+   const provenance={...original.provenance,note:"simulated pre-commit failure: "+name};
+   await assert.rejects(
+    publishAtomicRelease({output:w.output,wasm:original.wasm,
+      provenance,manifest:original.manifest,
+      [hook]:()=>{trapped++;throw Error("injected failure "+name)}}),
+    /injected failure/
+   );
+   assert.deepEqual(await readFile(w.output+".current.json"),selected,
+    "before pointer rename the previous identity must stay selected");
+   const still=await readAtomicRelease(w.output);
+   assert.equal(still.releaseSha256,baseline.releaseSha256);
+   const state=await inspectAtomicReleaseState(w.output);
+   assert.equal(state.current,baseline.releaseSha256);
+   assert.ok(state.unreferenced.length>=1,
+    "a verified pre-commit release may be retained as an orphan");
+  }
+  assert.equal(trapped,2);
+
+  const uncertainProvenance={...original.provenance,
+   note:"simulated failure after pointer rename but before pointer-parent fsync"};
+  let uncertain=null;
+  await assert.rejects(
+   publishAtomicRelease({
+    output:w.output,wasm:original.wasm,manifest:original.manifest,
+    provenance:uncertainProvenance,
+    __testAfterPointerRename:()=>{throw Error("injected parent fsync failure")}
+   }),
+   error=>{
+    uncertain=error;
+    return error instanceof AtomicReleaseCommitUncertainError&&
+      error.code==="ATOMIC_RELEASE_COMMIT_UNCERTAIN"&&
+      error.mayBePublished===true&&
+      error.cause?.message==="injected parent fsync failure";
+   }
+  );
+  const current=await readAtomicRelease(w.output);
+  assert.equal(current.releaseSha256,uncertain.releaseSha256);
+  assert.notEqual(current.releaseSha256,baseline.releaseSha256);
+  assert.equal(execute(current.wasm),42n);
+  const inventory=await inspectAtomicReleaseState(w.output);
+  assert.equal(inventory.current,uncertain.releaseSha256);
+  assert.ok(inventory.unreferenced.includes(baseline.releaseSha256),
+   "the previously selected reader-pinnable release must be retained");
+ }finally{await cleanup(w.dir)}
+});
