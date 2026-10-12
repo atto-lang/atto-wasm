@@ -5,7 +5,7 @@
  */
 import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
-import {readFile,writeFile,mkdir,mkdtemp,rm,rename,realpath,stat} from "node:fs/promises";
+import {readFile,writeFile,mkdir,mkdtemp,rm,rename,realpath,stat,lstat} from "node:fs/promises";
 import {dirname,resolve,isAbsolute,join,basename} from "node:path";
 import {fileURLToPath} from "node:url";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
@@ -37,9 +37,15 @@ async function rejectMixedPublication(published,publication){
   [published+".current.json",published+".releases"];
  for(const path of conflicts){
   try{
-   await stat(path);
-   throw Error("legacy and atomic artifact publications cannot share an output path");
-  }catch(error){if(error.code!=="ENOENT")throw error}
+   // lstat sees the directory entry itself, including dangling symlinks.
+   // Following symlinks via stat() can report ENOENT for an occupied output
+   // name and silently allow a conflicting publication protocol.
+   await lstat(path);
+  }catch(error){
+   if(error.code==="ENOENT")continue;
+   throw error;
+  }
+  throw Error("legacy and atomic artifact publications cannot share an output path");
  }
 }
 // Cooperating compiler processes serialize the actual publication boundary,
