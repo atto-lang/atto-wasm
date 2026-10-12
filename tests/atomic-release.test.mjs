@@ -686,3 +686,44 @@ test("dangling publication symlink entries never bypass mixed-mode exclusion",as
   }finally{await cleanup(w.dir)}
  }
 });
+
+
+test("publisher rejects Proxy-backed metadata and Wasm without triggering traps",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const original=await readAtomicRelease(w.output);
+  const selected=await readFile(w.output+".current.json");
+  let traps=0;
+  const poisonous=target=>new Proxy(target,{
+   get(){traps++;throw Error("unexpected proxy get")},
+   getPrototypeOf(){traps++;throw Error("unexpected proxy prototype read")},
+   ownKeys(){traps++;throw Error("unexpected proxy enumeration")}
+  });
+  const variants=[
+   {wasm:poisonous(original.wasm),provenance:original.provenance,manifest:original.manifest,
+    pattern:/invalid Wasm bytes/},
+   {wasm:original.wasm,provenance:poisonous(original.provenance),manifest:original.manifest,
+    pattern:/invalid producer record/},
+   {wasm:original.wasm,provenance:original.provenance,manifest:poisonous(original.manifest),
+    pattern:/inconsistent manifest provenance/},
+   {wasm:original.wasm,provenance:original.provenance,
+    manifest:{...original.manifest,imports:poisonous([])},
+    pattern:/inconsistent manifest provenance/},
+   {wasm:original.wasm,provenance:original.provenance,
+    manifest:{...original.manifest,requiredCapabilities:poisonous([])},
+    pattern:/inconsistent manifest provenance/},
+   {wasm:original.wasm,provenance:original.provenance,
+    manifest:{...original.manifest,memory:poisonous(original.manifest.memory)},
+    pattern:/inconsistent manifest provenance/},
+   {wasm:original.wasm,provenance:original.provenance,
+    manifest:{...original.manifest,producer:poisonous(original.manifest.producer)},
+    pattern:/inconsistent manifest provenance/}
+  ];
+  for(const {pattern,...entry} of variants){
+   await assert.rejects(publishAtomicRelease({output:w.output,...entry}),pattern);
+   assert.equal(traps,0,"publisher must not invoke arbitrary caller Proxy traps");
+   assert.deepEqual(await readFile(w.output+".current.json"),selected);
+  }
+ }finally{await cleanup(w.dir)}
+});
