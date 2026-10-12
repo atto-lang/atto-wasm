@@ -2,6 +2,7 @@
 // GUEST_POWER_CUT_BOUNDARY appears on the serial console. A second cold boot
 // reads the same ext4 block image and independently validates the pointer.
 import {readFile} from "node:fs/promises";
+import {createHash} from "node:crypto";
 import {publishAtomicRelease,readAtomicRelease,inspectAtomicReleaseState}
  from "./scripts/atomic-release.mjs";
 const output="/workspace/slot.wasm";
@@ -30,6 +31,11 @@ if(mode==="verify"&&modes.has(checkpoint)){
  const result=await readAtomicRelease(output);
  const selected=result.releaseSha256;
  const val=new WebAssembly.Instance(new WebAssembly.Module(result.wasm)).exports.main();
+ const allowed=expected.find(x=>x.expected===Number(val));
+ const actualHash=createHash("sha256").update(result.wasm).digest("hex");
+ if(!allowed||selected!==allowed.releaseSha256||
+    actualHash!==allowed.wasmSha256)
+   throw Error("cold-boot pointer chose an unrecognized release identity or Wasm digest");
  const before=new Set(["__testAfterReleaseRename","__testAfterReleaseInstall",
    "__testBeforePointerRename"]);
  if(before.has(checkpoint)){
