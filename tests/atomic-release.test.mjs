@@ -195,3 +195,37 @@ test("browser manifest cannot downgrade memory or request host capabilities",asy
   assert.equal(published.releaseSha256,(await readAtomicRelease(w.output)).releaseSha256);
  }finally{await cleanup(w.dir)}
 });
+
+test("racing legacy and atomic publishers cannot commit both formats",async()=>{
+ const w=await workspace();
+ try{
+  const outcome=await Promise.allSettled([
+   compileOresToWasm({...w,environment:"browser",publication:"atomic"}),
+   compileOresToWasm({...w,environment:"browser",publication:"legacy"})
+  ]);
+  assert.equal(outcome.filter(x=>x.status==="fulfilled").length,1);
+  assert.equal(outcome.filter(x=>x.status==="rejected").length,1);
+  assert.match(String(outcome.find(x=>x.status==="rejected").reason),
+    /legacy and atomic artifact publications cannot share/);
+  if(outcome[0].status==="fulfilled"){
+   assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+   await assert.rejects(readFile(w.output),/ENOENT/);
+  }else{
+   assert.equal(execute(await readFile(w.output)),42n);
+   await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+  }
+  await assert.rejects(readFile(w.output+".publication.lock"),/ENOENT/);
+ }finally{await cleanup(w.dir)}
+});
+
+test("an existing publication lock fails closed instead of stealing it",async()=>{
+ const w=await workspace();
+ try{
+  await mkdir(w.output+".publication.lock");
+  await assert.rejects(
+   compileOresToWasm({...w,publication:"atomic",environment:"browser"}),
+   /artifact publication lock unavailable/
+  );
+  await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+ }finally{await cleanup(w.dir)}
+});
