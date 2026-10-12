@@ -24,19 +24,20 @@ jobs:
       - name: Emit and validate the TypeSpec release schema
         run: |
           npm install --no-save --package-lock=false '@typespec/compiler@1.4.0' '@typespec/json-schema@1.4.0'
+          mkdir -p build/atomic-typespec-emitted
           npx tsp compile contracts/atomic-release.tsp \
             --emit=@typespec/json-schema \
-            --output-dir="$RUNNER_TEMP/atomic-typespec-emitted" \
+            --output-dir=build/atomic-typespec-emitted \
             --option '@typespec/json-schema.file-type=json' \
             --option '@typespec/json-schema.emitAllModels=true' \
             --option '@typespec/json-schema.bundleId=https://oreslang.dev/schemas/atomic-typespec-bundle.json' \
             --option '@typespec/json-schema.seal-object-schemas=true'
       - name: Inspect generated TypeSpec schemas
         run: |
-          find "$RUNNER_TEMP/atomic-typespec-emitted" -type f -print
+          find build/atomic-typespec-emitted -type f -print
           python3 - <<'PY'
           import json,os,pathlib
-          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"atomic-typespec-emitted"
+          root=pathlib.Path("build/atomic-typespec-emitted")
           for path in sorted(root.rglob("*.json")):
               doc=json.loads(path.read_text())
               print("EMITTED_SCHEMA_FILE",str(path), "keys", list(doc)[:20],
@@ -44,4 +45,4 @@ jobs:
                     "id",doc.get("$id"))
           PY
       - name: Differential conformance of normative and emitted JSON Schema
-        run: python3 scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures" "$RUNNER_TEMP/atomic-typespec-emitted"
+        run: python3 scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures" build/atomic-typespec-emitted
