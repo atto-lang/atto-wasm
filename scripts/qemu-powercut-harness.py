@@ -8,6 +8,7 @@ enterprise filesystem safety, or a signed machine provenance.
 Only run with freshly created temporary disk images.
 """
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -163,13 +164,36 @@ def main():
   base=Path(work)
   root=base/"root"
   create_guest_tree(root)
+  passed=[]
   for hook in CHECKPOINTS:
    disk=base/(hook+".img")
    disk_image(root,disk)
    boot_until(kernel,initrd,disk,"publish",hook)
    boot_until(kernel,initrd,disk,"verify",hook)
    disk.unlink()
+   passed.append(hook)
    print("QEMU_POWER_CUT_CASE_PASS",hook,flush=True)
+ evidence={
+  "schemaVersion":1,
+  "kind":"oreslang.qemu-ext4-unclean-powercut-recovery-v1",
+  "sourceTree":subprocess.check_output(["git","rev-parse","HEAD^{tree}"],
+                                    cwd=ROOT,text=True).strip(),
+  "sourceCommit":subprocess.check_output(["git","rev-parse","HEAD"],
+                                      cwd=ROOT,text=True).strip(),
+  "kernelSha256":sha256(kernel),
+  "initrdSha256":sha256(initrd),
+  "qemuSha256":sha256(shutil.which("qemu-system-x86_64")),
+  "disk":"raw-ext4-virtio-blk-cache-writeback",
+  "mode":"qemu-tcg-x86_64-no-kvm",
+  "uncleanHypervisorStops":len(passed),
+  "verifiedColdBoots":len(passed),
+  "checkpoints":passed,
+  "limitations":"QEMU process kill is not host hardware power loss or controller cache test"
+ }
+ path=ROOT/"build/qemu-powercut-evidence.json"
+ path.parent.mkdir(parents=True,exist_ok=True)
+ path.write_text(json.dumps(evidence,sort_keys=True,indent=2)+"\\n")
+ print("QEMU_POWER_CUT_EVIDENCE_SHA256",sha256(path),flush=True)
  print("QEMU_POWER_CUT_MATRIX_PASS",len(CHECKPOINTS),flush=True)
 
 if __name__=="__main__":
