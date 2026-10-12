@@ -326,3 +326,63 @@ test("array element accessors and hidden schema array authority reject even for 
   /invalid tuple types element/);
  assert.equal(accesses,0);
 });
+
+test("built-in owned byte snapshot ignores hostile typed-array getters and iterators",async()=>{
+ let traps=0;
+ class HostileBytes extends Uint8Array{
+  get length(){traps++;return 0;}
+  get buffer(){traps++;throw Error("hostile buffer accessor");}
+  get byteOffset(){traps++;throw Error("hostile offset accessor");}
+  get byteLength(){traps++;throw Error("hostile length accessor");}
+  [Symbol.iterator](){traps++;throw Error("hostile iterable");}
+ }
+ const owned=new HostileBytes([7,8,9]);
+ const msg={variant:"Batch",fields:{
+  pair:["hi",1n],fixed:[true,false],items:[],
+  state:{variant:"None",value:null},blob:owned
+ }};
+ const encoded=await encodeMessage(contract,msg);
+ owned[0]=255;
+ const decoded=await decodeMessage(contract,encoded);
+ assert.deepEqual([...decoded.fields.blob],[7,8,9]);
+ class HostileWire extends Uint8Array{
+  get buffer(){traps++;throw Error("hostile wire buffer");}
+  get byteOffset(){traps++;throw Error("hostile wire offset");}
+  get byteLength(){traps++;throw Error("hostile wire byteLength");}
+ }
+ const viaSubclass=await decodeMessage(contract,new HostileWire(encoded));
+ assert.deepEqual(viaSubclass,decoded);
+ class HostileView extends DataView{
+  get buffer(){traps++;throw Error("hostile DataView buffer");}
+  get byteOffset(){traps++;throw Error("hostile DataView offset");}
+  get byteLength(){traps++;throw Error("hostile DataView byteLength");}
+ }
+ const view=new HostileView(encoded.buffer,encoded.byteOffset,encoded.byteLength);
+ assert.deepEqual(await decodeMessage(contract,view),decoded);
+ assert.equal(traps,0,"native view snapshot must bypass hostile overrides");
+});
+
+test("byte snapshot rejects proxies and oversized views before any payload decode",async()=>{
+ const msg={variant:"Compute",fields:{text:"ok",n:42n}};
+ const bytes=await encodeMessage(contract,msg);
+ let traps=0;
+ const proxy=new Proxy(bytes,{getPrototypeOf(){traps++;throw Error("proxy trap");}});
+ await assert.rejects(decodeMessage(contract,proxy),/expected message bytes/);
+ const badBlob=new Proxy(Uint8Array.of(1,2),{getPrototypeOf(){traps++;throw Error("proxy trap");}});
+ const batch={variant:"Batch",fields:{pair:["hi",1n],fixed:[true,false],
+  items:[],state:{variant:"None",value:null},blob:badBlob}};
+ await assert.rejects(encodeMessage(contract,batch),/invalid byte view/);
+ assert.equal(traps,0,"typed array proxy traps must not execute");
+ const huge=new Uint8Array(2*1024*1024);
+ await assert.rejects(decodeMessage(contract,huge),/invalid message size/);
+ await assert.rejects(decodeMessage(contract,new DataView(huge.buffer)),/invalid message size/);
+ if(typeof SharedArrayBuffer!=="undefined"){
+  class MaskedShared extends Uint8Array{
+   get buffer(){traps++;return new ArrayBuffer(8);}
+  }
+  const shared=new MaskedShared(new SharedArrayBuffer(8));
+  await assert.rejects(encodeMessage(contract,{variant:"Batch",fields:{...batch.fields,blob:shared}}),
+   /shared memory not admitted/);
+  assert.equal(traps,0);
+ }
+});
