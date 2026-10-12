@@ -167,7 +167,8 @@ test("signed matching hashes alone cannot admit malformed or incompatible Wasm",
    const producer={schemaVersion:1,kind:"llvm-ores-to-wasm32-core-experimental",
      compilerSha256:"1".repeat(64),sourceSha256:"2".repeat(64),
      llvmIrSha256:"3".repeat(64),wasmSha256:h,
-     wasmBytes:bytes.length,exportName:"main"};
+     wasmBytes:bytes.length,exportName:"main",importCount:0,
+     clangVersion:"fixture-clang-verified",note:"ABl negative test; valid v1 metadata"};
    await assert.rejects(publishAtomicRelease({output:w.output,
      wasm:bytes,provenance:producer}),message);
    await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
