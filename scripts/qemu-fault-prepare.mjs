@@ -5,7 +5,7 @@ import {createHash} from "node:crypto";
 import {spawnSync} from "node:child_process";
 import {readFile,writeFile,mkdir} from "node:fs/promises";
 import {join,resolve} from "node:path";
-import {publishAtomicRelease,readAtomicRelease} from "../atomic-release.mjs";
+import {publishAtomicRelease,readAtomicRelease} from "./atomic-release.mjs";
 
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
 const dir=resolve(process.argv[2]||"");
