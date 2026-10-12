@@ -104,7 +104,7 @@ test("corrupt staged metadata never publishes a pointer",async()=>{
   await assert.rejects(publishAtomicRelease({
    output:w.output,wasm:Uint8Array.from([0,97,115,109,1,0,0,0]),
    provenance:{wasmSha256:"0".repeat(64)}
-  }),/invalid provenance digest/);
+  }),/invalid producer record/);
   await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
   assert.equal((await readdir(w.dir)).some(x=>x.startsWith(".oreslang-pointer-")),false);
  }finally{await cleanup(w.dir)}
@@ -594,5 +594,67 @@ test("verified release reader disallows symlinked pointer files",async()=>{
   const restored=await readAtomicRelease(w.output);
   assert.equal(restored.releaseSha256,compiled.releaseSha256);
   assert.equal(execute(restored.wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("closed publisher inputs reject hidden/symbol authority and never invoke digest accessors",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const release=await readAtomicRelease(w.output);
+  const prior=await readFile(w.output+".current.json");
+  const hidden={...release.provenance};
+  Object.defineProperty(hidden,"privilegedToken",{value:"net",enumerable:false});
+  const symbolic={...release.provenance};
+  Object.defineProperty(symbolic,Symbol("privileged"),{value:"net"});
+  let getterReads=0;
+  const accessor={...release.provenance};
+  Object.defineProperty(accessor,"wasmSha256",{enumerable:true,
+   get(){getterReads++;throw Error("untrusted digest getter executed");}});
+  for(const provenance of [hidden,symbolic,accessor]){
+   await assert.rejects(publishAtomicRelease({output:w.output,
+    wasm:release.wasm,manifest:release.manifest,provenance
+   }),/invalid producer record/);
+   assert.deepEqual(await readFile(w.output+".current.json"),prior);
+  }
+  assert.equal(getterReads,0);
+  const badManifest={...release.manifest};
+  Object.defineProperty(badManifest,Symbol("hostAuthority"),{value:true});
+  await assert.rejects(publishAtomicRelease({output:w.output,
+   wasm:release.wasm,manifest:badManifest,provenance:release.provenance
+  }),/inconsistent manifest provenance/);
+  assert.deepEqual(await readFile(w.output+".current.json"),prior);
+ }finally{await cleanup(w.dir)}
+});
+
+test("FIFO pointer cannot block atomic release reader before type verification",async(t)=>{
+ if(process.platform==="win32")return t.skip("POSIX FIFO-only regression");
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const pointer=w.output+".current.json",backup=pointer+".saved";
+  const mk=spawnSync("mkfifo",["--",pointer+".probe"],{timeout:5000});
+  if(mk.status!==0)return t.skip("mkfifo is not installed");
+  await unlink(pointer+".probe");
+  await rename(pointer,backup);
+  try{
+   const status=spawnSync("mkfifo",["--",pointer],{timeout:5000});
+   assert.equal(status.status,0,"FIFO setup failed");
+   const moduleURL=new URL("../scripts/atomic-release.mjs",import.meta.url).href;
+   const childSource=[
+    "import {readAtomicRelease} from "+JSON.stringify(moduleURL)+";",
+    "try{await readAtomicRelease("+JSON.stringify(w.output)+");process.exit(0)}",
+    "catch(e){console.error(e.message);process.exit(12)}"
+   ].join("\n");
+   const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
+     {timeout:5000,encoding:"utf8"});
+   assert.equal(child.status,12,
+     "unsafe blocking FIFO reader: "+JSON.stringify({signal:child.signal,stderr:child.stderr}));
+   assert.match(child.stderr,/invalid file/);
+  }finally{
+   await unlink(pointer);
+   await rename(backup,pointer);
+  }
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
  }finally{await cleanup(w.dir)}
 });
