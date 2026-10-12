@@ -65,7 +65,7 @@ def main():
     # Capture the complete installed Debian package graph as a SHA-bound
     # observation. Direct package pins alone do NOT freeze their transitives.
     dpkg_snapshot = cmd("dpkg-query", "-W", "-f=${binary:Package}=${Version}\\n")
-    dpkg_bytes = ("\\n".join(sorted(dpkg_snapshot.splitlines())) + "\\n").encode()
+    dpkg_bytes = ("\n".join(sorted(dpkg_snapshot.splitlines())) + "\n").encode()
     pointer_records = []
     for expected in (42, 43):
         prefix = pathlib.Path("build") / f"real-{expected}.wasm"
