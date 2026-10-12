@@ -31,6 +31,39 @@ function rejectStartSection(bytes){
  }
 }
 
+async function rejectMixedPublication(published,publication){
+ const conflicts=publication==="atomic"?
+  [published,published+".artifact.json",published+".provenance.json"]:
+  [published+".current.json",published+".releases"];
+ for(const path of conflicts){
+  try{
+   await stat(path);
+   throw Error("legacy and atomic artifact publications cannot share an output path");
+  }catch(error){if(error.code!=="ENOENT")throw error}
+ }
+}
+// Cooperating compiler processes serialize the actual publication boundary,
+// not source compilation. An abandoned lock fails closed until cleaned by an
+// operator; never steal a lock based on an untrusted pid/time claim.
+async function withPublicationLock(published,publication,callback){
+ const lock=published+".publication.lock";
+ let acquired=false;
+ for(let attempt=0;attempt<160;attempt++){
+  try{await mkdir(lock,{mode:0o700});acquired=true;break}
+  catch(error){
+   if(error.code!=="EEXIST")throw error;
+   await new Promise(resolve=>setTimeout(resolve,25));
+  }
+ }
+ if(!acquired)throw Error("artifact publication lock unavailable");
+ try{
+  // This second admission check is serialized across cooperating compilers.
+  await rejectMixedPublication(published,publication);
+  return await callback();
+ }finally{
+  await rm(lock,{recursive:true,force:true});
+ }
+}
 const absolute=(value,label)=>{if(!value||!isAbsolute(value))throw Error(label+" must be an absolute path");return value};
 function run(command,args,{input}={}){
  const output=spawnSync(command,args,{input,encoding:"utf8",timeout:30000,maxBuffer:4*1024*1024,windowsHide:true});
@@ -52,7 +85,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  const published=join(outputParent,basename(output));
  const protectedInputs=new Set([sourcePath,compilerPath]);
  if(!["atomic","legacy"].includes(publication))throw Error("invalid artifact publication mode");
- for(const destination of [published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases"]){
+ for(const destination of [published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases",published+".publication.lock"]){
   if(protectedInputs.has(destination))
    throw Error("output or artifact metadata path overlaps a compiler/source input");
  }
@@ -75,17 +108,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
     throw Error("output or artifact metadata path overlaps a compiler/source input");
   }catch(error){if(error?.code!=="ENOENT")throw error}
  }
- // Fail closed if this destination already uses the other publication
- // protocol. Otherwise old sidecars and an atomic pointer could disagree.
- const conflicting=publication==="atomic"?
-   [published,published+".artifact.json",published+".provenance.json"]:
-   [published+".current.json",published+".releases"];
- for(const path of conflicting){
-  try{
-   await stat(path);
-   throw Error("legacy and atomic artifact publications cannot share an output path");
-  }catch(error){if(error.code!=="ENOENT")throw error}
- }
+ await rejectMixedPublication(published,publication);
  const [sourceBytes,compilerBytes]=await Promise.all([readFile(sourcePath),readFile(compilerPath)]);
  if(sourceBytes.length>MAX_SOURCE_BYTES)throw Error("source exceeds 1 MiB compiler bridge budget");
  if(compilerBytes.length>MAX_COMPILER_BYTES)throw Error("compiler exceeds 256 MiB executable budget");
@@ -166,6 +189,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   await writeFile(join(scratch,"artifact.json"),JSON.stringify(manifest,null,2)+"\n");
  }
  await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
+ return await withPublicationLock(published,publication,async()=>{
  if(publication==="atomic"){
   // The content-addressed release is privately staged and sealed first.
   // Only a single pointer rename makes it visible to verified readers.
@@ -182,6 +206,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  await rename(join(scratch,"provenance.json"),published+".provenance.json");
  await rename(provisional,published);
  return record;
+ });
  }finally{await rm(scratch,{recursive:true,force:true})}
 }
 const calledFromCli=process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url);
