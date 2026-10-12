@@ -34,7 +34,9 @@ jobs:
       - name: Compile real Wasm from fixture LLVM and seal an atomic release
         run: node scripts/generate-atomic-contract-fixtures.mjs "$RUNNER_TEMP/atomic-contract-fixtures"
       - name: Validate actual pointer, seal, manifest and provenance with JSON Schema
-        run: "$RUNNER_TEMP/atomic-schema-venv/bin/python" scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures"
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/atomic-schema-venv/bin/python" scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures"
       - name: Emit and validate the TypeSpec release schema
         run: |
           npm ci --ignore-scripts --no-fund --no-audit
@@ -60,4 +62,6 @@ jobs:
                     "id",doc.get("$id"))
           PY
       - name: Differential conformance of normative and emitted JSON Schema
-        run: "$RUNNER_TEMP/atomic-schema-venv/bin/python" scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures" build/atomic-typespec-emitted
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/atomic-schema-venv/bin/python" scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures" build/atomic-typespec-emitted
