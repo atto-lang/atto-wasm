@@ -39,3 +39,15 @@ jobs:
           fi
           grep -q "Invariant ReaderPinnedReleasePresent is violated" /tmp/unsafe-recovery.log || { cat /tmp/unsafe-recovery.log; exit 1; }
           echo "PASS: unsafe garbage collection of reader-pinned release violated TLC invariant"
+
+      - name: Model commit outcome when pointer rename precedes durability confirmation
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -deadlock -cleanup -config formal/AtomicCommitOutcome.cfg formal/AtomicCommitOutcome.tla
+      - name: Unsafe replay of an uncertain commit must violate invariant
+        shell: bash
+        run: |
+          set -euo pipefail
+          if java -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -deadlock -cleanup -config formal/AtomicCommitOutcomeUnsafe.cfg formal/AtomicCommitOutcome.tla > /tmp/unsafe-outcome.log 2>&1; then
+            echo "Unsafe replay model unexpectedly passed"; cat /tmp/unsafe-outcome.log; exit 1
+          fi
+          grep -q "Invariant NoBlindReplay is violated" /tmp/unsafe-outcome.log || { cat /tmp/unsafe-outcome.log; exit 1; }
+          echo "PASS: blind replay after uncertain post-rename fsync rejected by TLC"
