@@ -88,9 +88,13 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   await writeFile(join(scratch,"artifact.json"),JSON.stringify(manifest,null,2)+"\n");
  }
  await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
- await rename(provisional,output);
- await rename(join(scratch,"provenance.json"),output+".provenance.json");
+ // Publish metadata before the executable module: any sidecar publication
+ // failure must not leave a new guest.wasm appearing ready for admission.
+ // Browser hosts still MUST verify manifest SHA-256 against the actual bytes:
+ // separate files cannot be atomically renamed as a group.
  if(environment)await rename(join(scratch,"artifact.json"),output+".artifact.json");
+ await rename(join(scratch,"provenance.json"),output+".provenance.json");
+ await rename(provisional,output);
  return record;
  }finally{await rm(scratch,{recursive:true,force:true})}
 }
