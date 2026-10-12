@@ -3,7 +3,7 @@
  * trust boundary. Immutable means nonoverwriting via this API, not WORM media.
  */
 import {createHash} from "node:crypto";
-import {readFile,writeFile,rename,rm,mkdir,mkdtemp,lstat,chmod} from "node:fs/promises";
+import {readFile,rename,rm,mkdir,mkdtemp,lstat,chmod,open,readdir} from "node:fs/promises";
 import {join,dirname,resolve} from "node:path";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
 import {inspectWasmBytes} from "./inspect-core-memory.mjs";
@@ -12,6 +12,18 @@ const hex=x=>typeof x==="string"&&/^[0-9a-f]{64}$/.test(x);
 const fail=x=>{throw Error("invalid atomic Oreslang release: "+x)};
 const paths=output=>({root:output+".releases",pointer:output+".current.json"});
 const canonical=x=>Buffer.from(JSON.stringify(x)+"\n");
+// Explicit Linux/POSIX durability barrier. On filesystems without directory
+// fsync support this fails closed rather than claiming persistence.
+async function fsyncDirectory(dir){
+ const handle=await open(dir,"r");
+ try{await handle.sync()}finally{await handle.close()}
+}
+async function durableWrite(path,bytes){
+ const handle=await open(path,"wx",0o400);
+ try{await handle.writeFile(bytes);await handle.sync()}
+ finally{await handle.close()}
+}
+
 async function safeFile(path,limit){
  const stat=await lstat(path);
  if(!stat.isFile()||stat.isSymbolicLink()||stat.size>limit)fail("invalid file");
@@ -121,15 +133,19 @@ export async function publishAtomicRelease({output,wasm,manifest=null,provenance
  await mkdir(root,{recursive:true,mode:0o700});
  const rootStat=await lstat(root);
  if(!rootStat.isDirectory()||rootStat.isSymbolicLink())fail("release root symlink");
+ // Persist the release-root directory entry before any pointer can refer to it.
+ await fsyncDirectory(dirname(root));
  const stage=await mkdtemp(join(root,".staging-"));
  let pointerDir=null;
  try{
-  await writeFile(join(stage,"guest.wasm"),bytes,{mode:0o400,flag:"wx"});
-  await writeFile(join(stage,"provenance.json"),provenanceBytes,{mode:0o400,flag:"wx"});
-  if(manifestBytes)await writeFile(join(stage,"artifact.json"),manifestBytes,{mode:0o400,flag:"wx"});
-  await writeFile(join(stage,"seal.json"),canonical(seal),{mode:0o400,flag:"wx"});
+  await durableWrite(join(stage,"guest.wasm"),bytes);
+  await durableWrite(join(stage,"provenance.json"),provenanceBytes);
+  if(manifestBytes)await durableWrite(join(stage,"artifact.json"),manifestBytes);
+  await durableWrite(join(stage,"seal.json"),canonical(seal));
   await verifyDir(stage,releaseSha256);
+  await fsyncDirectory(stage);
   await chmod(stage,0o500);
+  await fsyncDirectory(stage);
   const destinationDir=join(root,releaseSha256);
   try{await rename(stage,destinationDir)}
   catch(error){
@@ -137,11 +153,16 @@ export async function publishAtomicRelease({output,wasm,manifest=null,provenance
   }
   // Reject preexisting conflicting/replaced content, even if name matches.
   await verifyDir(destinationDir,releaseSha256);
+  // Release directory entry becomes durable before we expose its identity.
+  await fsyncDirectory(root);
   pointerDir=await mkdtemp(join(dirname(pointer),".oreslang-pointer-"));
   const temporaryPointer=join(pointerDir,"current.json");
-  await writeFile(temporaryPointer,canonical({schemaVersion:1,releaseSha256}),
-    {mode:0o400,flag:"wx"});
+  await durableWrite(temporaryPointer,canonical({schemaVersion:1,releaseSha256}));
+  await fsyncDirectory(pointerDir);
   await rename(temporaryPointer,pointer);
+  // Successful return means the pointer rename has crossed a durability
+  // barrier as well as the atomic visibility point.
+  await fsyncDirectory(dirname(pointer));
   return {releaseSha256,pointer,directory:destinationDir,wasmSha256:seal.fileHashes.wasm};
  }finally{
   // A concurrent winner may already have installed this identity. When a
