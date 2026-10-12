@@ -550,3 +550,32 @@ test("compiler bridge preserves confirmed commit through three cleanup failures"
   assert.equal(state.current,result.releaseSha256);
  }finally{await cleanup(w.dir)}
 });
+
+
+test("Unicode string bounds follow JSON Schema code-point counts",async()=>{
+ const w=await workspace();
+ try{
+  const baseline=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const original=await readAtomicRelease(w.output);
+  const cp="\u{1f642}";
+  const validProvenance={...original.provenance,
+   clangVersion:cp.repeat(256),note:cp.repeat(1024)};
+  const accepted=await publishAtomicRelease({
+   output:w.output,wasm:original.wasm,manifest:original.manifest,
+   provenance:validProvenance
+  });
+  assert.notEqual(accepted.releaseSha256,baseline.releaseSha256);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,accepted.releaseSha256);
+  const pointer=await readFile(w.output+".current.json");
+  for(const provenance of [
+   {...validProvenance,clangVersion:cp.repeat(257)},
+   {...validProvenance,note:cp.repeat(1025)}
+  ]){
+   await assert.rejects(publishAtomicRelease({
+    output:w.output,wasm:original.wasm,manifest:original.manifest,
+    provenance
+   }),/invalid producer record/);
+   assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+  }
+ }finally{await cleanup(w.dir)}
+});
