@@ -42,7 +42,7 @@ def locked():
         raise SystemExit("unsupported native toolchain lock host")
     if type(obj["packages"]) is not dict or set(obj["packages"])!=EXPECTED:
         raise SystemExit("incorrect native apt lock package set")
-    if not isinstance(obj["note"],str) or not 1<=len(obj["note"])<=1024 or "\\x00" in obj["note"]:
+    if not isinstance(obj["note"],str) or not 1<=len(obj["note"])<=1024 or chr(0) in obj["note"]:
         raise SystemExit("invalid native apt lock note")
     for name, version in obj["packages"].items():
         if not re.fullmatch(r"[a-z0-9-]+",name) or not re.fullmatch(r"[0-9A-Za-z.:+~_-]+",version):
