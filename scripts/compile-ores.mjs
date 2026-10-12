@@ -9,6 +9,7 @@ import {readFile,writeFile,mkdir,mkdtemp,rm,rename,realpath,stat} from "node:fs/
 import {dirname,resolve,isAbsolute,join,basename} from "node:path";
 import {fileURLToPath} from "node:url";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
+import {inspectWasmBytes} from "./inspect-core-memory.mjs";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
 const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES=16*1024*1024;
@@ -126,6 +127,11 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  if(imports.length)throw Error("guest Wasm unexpectedly imports host modules: "+imports.map(x=>x.module+"."+x.name).join(","));
  if(!WebAssembly.Module.exports(module).some(x=>x.name===exportName&&x.kind==="function"))throw Error("guest Wasm missing requested export");
  assertCoreI64Entry(wasm,exportName);
+ // The artifact manifest advertises an exact 2-page memory maximum. Check
+ // the binary rather than relying on Clang flags or its version string.
+ const memory=inspectWasmBytes(wasm,{maxModuleBytes:MAX_WASM_BYTES,maxMemoryPages:2});
+ if(memory.memoryCount!==1||!memory.hasMemoryMaximum||memory.memoryMaximum!==2)
+  throw Error("linked Wasm memory must declare exactly one bounded 2-page memory");
  const record={
   schemaVersion:1,kind:"llvm-ores-to-wasm32-core-experimental",
   compilerSha256:actualCompilerHash,sourceSha256:sha(sourceBytes),
