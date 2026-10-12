@@ -173,3 +173,33 @@ export async function publishAtomicRelease({output,wasm,manifest=null,provenance
   if(pointerDir)await rm(pointerDir,{recursive:true,force:true});
  }
 }
+
+// Read-only recovery inspection. Never collect orphans automatically:
+// a concurrently executing reader may still have pinned their identity.
+export async function inspectAtomicReleaseState(output){
+ if(typeof output!=="string"||!output)fail("missing output");
+ const {root}=paths(resolve(output));
+ let current=null,pointerError=null;
+ try{current=(await readAtomicRelease(output)).releaseSha256}
+ catch(error){pointerError=String(error?.message||error).slice(0,256)}
+ let entries;
+ try{
+  const stat=await lstat(root);
+  if(!stat.isDirectory()||stat.isSymbolicLink())fail("invalid release root");
+  entries=await readdir(root,{withFileTypes:true});
+ }catch(error){
+  if(error?.code==="ENOENT")
+   return {current,pointerError,staging:[],unreferenced:[],invalid:[]};
+  throw error;
+ }
+ if(entries.length>4096)fail("recovery scan exceeds entry budget");
+ const staging=[],unreferenced=[],invalid=[];
+ for(const entry of entries){
+  if(entry.name.startsWith(".staging-")){staging.push(entry.name);continue}
+  if(!hex(entry.name)){invalid.push(entry.name);continue}
+  if(entry.name===current)continue;
+  try{await verifyDir(join(root,entry.name),entry.name);unreferenced.push(entry.name)}
+  catch{invalid.push(entry.name)}
+ }
+ return {current,pointerError,staging,unreferenced,invalid};
+}
