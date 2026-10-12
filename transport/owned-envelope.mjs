@@ -11,6 +11,28 @@ const SCHEMA_NODES=4096, SCHEMA_BYTES=65536;
 const magic=Uint8Array.of(79,82,77,49);
 const enc=new TextEncoder(),dec=new TextDecoder("utf-8",{fatal:true});
 const prim=new Set(["string","i64","bool","bytes"]);
+// Read the real backing storage through native brand-checked accessors.
+// Subclass overrides of .buffer, .length or Symbol.iterator must not choose
+// the bytes that are charged to a budget, hashed, or delivered to a guest.
+const typedProto=Object.getPrototypeOf(Uint8Array.prototype);
+const typedBuffer=Object.getOwnPropertyDescriptor(typedProto,"buffer").get;
+const typedOffset=Object.getOwnPropertyDescriptor(typedProto,"byteOffset").get;
+const typedLength=Object.getOwnPropertyDescriptor(typedProto,"byteLength").get;
+const viewBuffer=Object.getOwnPropertyDescriptor(DataView.prototype,"buffer").get;
+const viewOffset=Object.getOwnPropertyDescriptor(DataView.prototype,"byteOffset").get;
+const viewLength=Object.getOwnPropertyDescriptor(DataView.prototype,"byteLength").get;
+const arrayBufferLength=Object.getOwnPropertyDescriptor(ArrayBuffer.prototype,"byteLength").get;
+function checkedView(b){
+ if(!(b instanceof Uint8Array))fail("expected Uint8Array");
+ let buffer,offset,length;
+ try{
+  buffer=typedBuffer.call(b);offset=typedOffset.call(b);
+  length=typedLength.call(b);
+ }catch{fail("invalid byte view");}
+ if(typeof SharedArrayBuffer!=="undefined"&&buffer instanceof SharedArrayBuffer)
+  fail("shared memory not admitted");
+ return new Uint8Array(buffer,offset,length);
+}
 const plain=x=>x!==null&&typeof x==="object"&&[Object.prototype,null].includes(Object.getPrototypeOf(x));
 const fail=reason=>{throw new TypeError("Oreslang envelope: "+reason)};
 function shape(x,keys,name){
@@ -119,9 +141,13 @@ function stringBytes(s){
 class Writer{
  constructor(limit){this.parts=[];this.size=0;this.limit=limit;this.visits=0;}
  visit(){if(++this.visits>ITEMS)fail("value node budget exceeded");}
- put(b){if(!(b instanceof Uint8Array)||b.length>this.limit-this.size)fail("byte budget exceeded");
-  if(typeof SharedArrayBuffer!=="undefined"&&b.buffer instanceof SharedArrayBuffer)fail("shared memory not admitted");
-  this.parts.push(Uint8Array.from(b));this.size+=b.length;}
+ put(b){
+  const view=checkedView(b);
+  if(view.byteLength>this.limit-this.size)fail("byte budget exceeded");
+  const copy=new Uint8Array(view.byteLength);
+  Uint8Array.prototype.set.call(copy,view);
+  this.parts.push(copy);this.size+=copy.byteLength;
+ }
  u8(n){this.put(Uint8Array.of(n));}
  u16(n){const b=new Uint8Array(2);new DataView(b.buffer).setUint16(0,n,true);this.put(b);}
  u32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,true);this.put(b);}
@@ -146,8 +172,8 @@ function encode(w,t,x,d=0){
  if(t==="bool"){if(typeof x!=="boolean")fail("expected bool");return w.u8(x?1:0);}
  if(t==="string"||t==="bytes"){
   const b=t==="string"?stringBytes(x):x;
-  if(!(b instanceof Uint8Array))fail("expected Uint8Array");
-  w.u32(b.length);return w.put(b);
+  const view=checkedView(b);
+  w.u32(view.byteLength);return w.put(view);
  }
  if(Object.hasOwn(t,"tuple")){
   if(!Array.isArray(x)||x.length!==t.tuple.length)fail("tuple arity mismatch");
@@ -186,12 +212,27 @@ function decode(r,t,d=0){
  return Object.freeze({variant:v.name,value:v.payload===null?null:decode(r,v.payload,d+1)});
 }
 function snapshot(input){
- if(input instanceof ArrayBuffer)return Uint8Array.from(new Uint8Array(input));
- if(ArrayBuffer.isView(input)){
-  if(typeof SharedArrayBuffer!=="undefined"&&input.buffer instanceof SharedArrayBuffer)fail("shared memory not admitted");
-  return Uint8Array.from(new Uint8Array(input.buffer,input.byteOffset,input.byteLength));
- }
- fail("expected message bytes");
+ let buffer,offset=0,length;
+ if(input instanceof ArrayBuffer){
+  try{length=arrayBufferLength.call(input);buffer=input;}
+  catch{fail("invalid message buffer");}
+ }else if(ArrayBuffer.isView(input)){
+  try{
+   if(input instanceof DataView){
+    buffer=viewBuffer.call(input);offset=viewOffset.call(input);
+    length=viewLength.call(input);
+   }else{
+    buffer=typedBuffer.call(input);offset=typedOffset.call(input);
+    length=typedLength.call(input);
+   }
+  }catch{fail("invalid message view");}
+ }else fail("expected message bytes");
+ if(typeof SharedArrayBuffer!=="undefined"&&buffer instanceof SharedArrayBuffer)
+  fail("shared memory not admitted");
+ const src=new Uint8Array(buffer,offset,length);
+ const result=new Uint8Array(src.byteLength);
+ Uint8Array.prototype.set.call(result,src);
+ return result;
 }
 function budget(n){if(!Number.isSafeInteger(n)||n<HEADER||n>LIMIT)fail("invalid maxBytes");}
 export async function encodeMessage(schema,message,{maxBytes=LIMIT}={}){
