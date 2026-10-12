@@ -53,6 +53,19 @@ def main():
 
     compiler = pathlib.Path(compiler_path).resolve(strict=True)
     package_names = ["build-essential", "cmake", "clang", "lld", "llvm-dev"]
+    lock_path = root / "contracts/native-toolchain-ubuntu2404.lock.json"
+    package_lock = json.loads(lock_path.read_bytes())
+    pinned = package_lock["packages"]
+    if set(pinned) != set(package_names):
+        raise SystemExit("attested native package lock does not match audited package set")
+    actual_packages = {name: package(name) for name in package_names}
+    for name in package_names:
+        if actual_packages[name].split("=", 1)[1] != pinned[name]:
+            raise SystemExit("native package mismatch before attestation: "+name)
+    # Capture the complete installed Debian package graph as a SHA-bound
+    # observation. Direct package pins alone do NOT freeze their transitives.
+    dpkg_snapshot = cmd("dpkg-query", "-W", "-f=${binary:Package}=${Version}\\n")
+    dpkg_bytes = ("\\n".join(sorted(dpkg_snapshot.splitlines())) + "\\n").encode()
     pointer_records = []
     for expected in (42, 43):
         prefix = pathlib.Path("build") / f"real-{expected}.wasm"
@@ -81,7 +94,10 @@ def main():
             "release": platform.release(),
             "ubuntuRelease": cmd("lsb_release", "-rs"),
         },
-        "packages": {name: package(name) for name in package_names},
+        "packages": actual_packages,
+        "nativePackageLockSha256": sha256_file(lock_path),
+        "installedDpkgPackageCount": len(dpkg_snapshot.splitlines()),
+        "installedDpkgGraphSha256": hashlib.sha256(dpkg_bytes).hexdigest(),
         "tools": {
             "clang": tool("clang", "/usr/bin/clang"),
             "cmake": tool("cmake", "/usr/bin/cmake"),
@@ -97,6 +113,7 @@ def main():
     target.parent.mkdir(parents=True, exist_ok=True)
     encoded = (json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n").encode()
     target.write_bytes(encoded)
+    target.with_name("native-installed-packages.txt").write_bytes(dpkg_bytes)
     print("NATIVE_TOOLCHAIN_ATTESTATION_SHA256=" + hashlib.sha256(encoded).hexdigest())
     print("NATIVE_TOOLCHAIN_SOURCE_TREE=" + tree)
     print("NATIVE_TOOLCHAIN_COMPILER_SHA256=" + data["tools"]["nativeCompiler"]["sha256"])
