@@ -14,7 +14,8 @@ const prim=new Set(["string","i64","bool","bytes"]);
 const plain=x=>x!==null&&typeof x==="object"&&[Object.prototype,null].includes(Object.getPrototypeOf(x));
 const fail=reason=>{throw new TypeError("Oreslang envelope: "+reason)};
 function shape(x,keys,name){
- if(!plain(x)||Object.keys(x).some(k=>!keys.includes(k)))fail("invalid "+name+" shape");
+ if(!plain(x)||Reflect.ownKeys(x).some(k=>typeof k!=="string"||!keys.includes(k)))
+  fail("invalid "+name+" shape");
 }
 // Every key hashed into the ABI must be an own enumerable data property.
 // Otherwise Object.prototype pollution or accessors can inject authority.
