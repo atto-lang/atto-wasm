@@ -65,14 +65,16 @@ function dense(items,name){
   fail("invalid "+name);
  // A numeric getter, custom non-index attribute, or symbol key must never
  // change the normalized hash or bypass a zero-byte element accounting visit.
- const props=Reflect.ownKeys(items);
- if(props.length!==items.length+1)fail("invalid "+name+" shape");
+ // Preserve the specific sparse-index failure before enforcing closed
+ // array shape; missing holes and added hidden attributes are independent.
  for(let i=0;i<items.length;i++){
   const descriptor=Object.getOwnPropertyDescriptor(items,String(i));
   if(!descriptor)fail("sparse "+name);
   if(!descriptor.enumerable||!Object.hasOwn(descriptor,"value"))
    fail("invalid "+name+" element");
  }
+ if(Reflect.ownKeys(items).length!==items.length+1)
+  fail("invalid "+name+" shape");
 }
 function unique(a,label){if(new Set(a).size!==a.length)fail("duplicate "+label);}
 function name(x){if(typeof x!=="string"||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(x))fail("invalid name");return x;}
