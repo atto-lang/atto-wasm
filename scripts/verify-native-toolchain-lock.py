@@ -32,11 +32,14 @@ def locked():
     return obj,hashlib.sha256(raw).hexdigest()
 
 def main():
-    if len(sys.argv)!=2 or sys.argv[1] not in ("install-args","verify"):
-        raise SystemExit("usage: verify-native-toolchain-lock.py install-args|verify")
+    if len(sys.argv)<2 or sys.argv[1] not in ("install-args","verify"):
+        raise SystemExit("usage: verify-native-toolchain-lock.py install-args|verify [package ...]")
     obj,digest=locked()
+    requested=sys.argv[2:] or sorted(obj["packages"])
+    if len(set(requested))!=len(requested) or not set(requested).issubset(EXPECTED):
+        raise SystemExit("unknown or duplicate native package name")
     if sys.argv[1]=="install-args":
-        print(" ".join(name+"="+version for name,version in sorted(obj["packages"].items())))
+        print(" ".join(name+"="+obj["packages"][name] for name in sorted(requested)))
         return
     if platform.system()!="Linux" or platform.machine() not in ("x86_64","amd64"):
         raise SystemExit("native lock requires Linux amd64")
@@ -44,7 +47,8 @@ def main():
     if ubuntu!="24.04":
         raise SystemExit("native lock requires Ubuntu 24.04")
     found={}
-    for name, expected in sorted(obj["packages"].items()):
+    for name in sorted(requested):
+        expected=obj["packages"][name]
         actual=subprocess.check_output([
             "dpkg-query","-W","-f=${Version}",name
         ],text=True).strip()
