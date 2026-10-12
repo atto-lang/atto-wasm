@@ -30,6 +30,10 @@ garbage collection requires a separate quiescence-aware design.
 
 ## Security / migration limits
 
+- One output path cannot contain both protocols. Atomic publication refuses an
+  existing legacy .wasm/sidecar layout; legacy publication refuses an existing
+  .current.json pointer or .releases directory. Migrate to a new output
+  pathname (or perform an explicit quiesced migration), never silently mix.
 - The legacy layout remains available for existing callers and tests and
   **does not** have atomic bundle semantics. Production readers requiring
   atomicity must explicitly opt in and use the verified reader; a future
