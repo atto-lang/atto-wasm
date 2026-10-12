@@ -56,9 +56,9 @@ model CoreWasmManifest {
   @maxValue(16777216)
   wasmBytes: int32;
   @maxItems(0)
-  imports: [];
+  imports: string[];
   @maxItems(0)
-  requiredCapabilities: [];
+  requiredCapabilities: string[];
   memory: CoreMemory;
   producer: ProducerIdentity;
 }
