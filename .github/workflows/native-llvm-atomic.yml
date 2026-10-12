@@ -86,3 +86,19 @@ jobs:
           assert.notEqual(...output);
           console.log('PASS two SHA-pinned compiled Oreslang programs, durable atomic release IDs and i64 42/43');
           JS
+      - name: Record native toolchain and two sealed-release SHA-256 identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/attest-native-toolchain.py \
+            build/source-llvm/oreslang-llvmc \
+            build/native-toolchain-attestation.json
+          python3 -m json.tool build/native-toolchain-attestation.json > /dev/null
+          sha256sum build/native-toolchain-attestation.json
+      - name: Preserve exact-build native toolchain observation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-wasm-toolchain-attestation
+          path: build/native-toolchain-attestation.json
+          if-no-files-found: error
+          retention-days: 30
