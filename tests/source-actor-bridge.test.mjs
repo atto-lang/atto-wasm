@@ -37,20 +37,28 @@ test("real LLVM-compiled source actor persists state only within one Wasm instan
   });
   assert.equal(record.actorName,"Counter");
   const manifest=JSON.parse(await readFile(output+".artifact.json","utf8"));
-  assert.equal(manifest.artifactType,"oreslang.core-wasm.actor-i64-v1");
+  assert.equal(manifest.artifactType,"oreslang.core-wasm.actor-i64-v2");
   assert.deepEqual(manifest.actor,{
-   name:"Counter",init:"oreslang_actor_Counter_init",
-   onMessage:"oreslang_actor_Counter_on_message",
+   name:"Counter",init:"oreslang_wasm_actor_init",
+   onMessage:"oreslang_wasm_actor_on_message",teardown:"oreslang_wasm_actor_teardown",
+   lifecycle:"NEW-ACTIVE-STOPPED",
    messageShape:"I",instancesPerActor:1
   });
   const module=new WebAssembly.Module(await readFile(output));
   assert.equal(WebAssembly.Module.imports(module).length,0);
   const a=new WebAssembly.Instance(module),b=new WebAssembly.Instance(module);
-  a.exports.oreslang_actor_Counter_init();
-  assert.equal(a.exports.oreslang_actor_Counter_on_message(2n),12n);
-  assert.equal(a.exports.oreslang_actor_Counter_on_message(3n),15n);
-  b.exports.oreslang_actor_Counter_init();
-  assert.equal(b.exports.oreslang_actor_Counter_on_message(1n),11n);
-  assert.equal(a.exports.oreslang_actor_Counter_on_message(1n),16n);
+  a.exports.oreslang_wasm_actor_init();
+  assert.equal(a.exports.oreslang_wasm_actor_on_message(2n),12n);
+  assert.equal(a.exports.oreslang_wasm_actor_on_message(3n),15n);
+  b.exports.oreslang_wasm_actor_init();
+  assert.equal(b.exports.oreslang_wasm_actor_on_message(1n),11n);
+  assert.equal(a.exports.oreslang_wasm_actor_on_message(1n),16n);
+  assert.throws(()=>a.exports.oreslang_wasm_actor_init(),WebAssembly.RuntimeError,
+   "canonical one-shot ABI cannot be reinitialized");
+  a.exports.oreslang_wasm_actor_teardown();
+  assert.throws(()=>a.exports.oreslang_wasm_actor_on_message(1n),WebAssembly.RuntimeError,
+   "old actor instance cannot execute after teardown");
+  assert.throws(()=>a.exports.oreslang_wasm_actor_teardown(),WebAssembly.RuntimeError);
+  b.exports.oreslang_wasm_actor_teardown();
  }finally{await rm(folder,{recursive:true,force:true})}
 });
