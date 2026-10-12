@@ -115,6 +115,10 @@ export async function publishAtomicRelease({output,wasm,manifest=null,provenance
   await rename(temporaryPointer,pointer);
   return {releaseSha256,pointer,directory:destinationDir,wasmSha256:seal.fileHashes.wasm};
  }finally{
+  // A concurrent winner may already have installed this identity. When a
+  // rename loses, stage still has its protective non-writable mode; restore
+  // permission only for the private loser before discarding it.
+  try{await chmod(stage,0o700)}catch(error){if(error.code!=="ENOENT")throw error}
   await rm(stage,{recursive:true,force:true});
   if(pointerDir)await rm(pointerDir,{recursive:true,force:true});
  }
