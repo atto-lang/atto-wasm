@@ -72,3 +72,50 @@ export async function readAtomicRelease(output){
   fail("invalid current pointer");
  return verifyDir(join(root,p.releaseSha256),p.releaseSha256);
 }
+
+/** A failed build leaves the previous current pointer unchanged. The new
+ * release directory is written privately, independently checked, and moved
+ * into place before one pointer rename (the linearization point).
+ * Concurrent writers are last-writer-wins among verified complete releases.
+ */
+export async function publishAtomicRelease({output,wasm,manifest=null,provenance}){
+ if(typeof output!=="string"||!output)fail("missing output");
+ if(!(wasm instanceof Uint8Array))fail("invalid Wasm bytes");
+ const destination=resolve(output),{root,pointer}=paths(destination);
+ const bytes=Buffer.from(wasm);
+ const {seal,releaseSha256}=descriptorFor(bytes,manifest,provenance);
+ const provenanceBytes=canonical(provenance);
+ const manifestBytes=manifest===null?null:canonical(manifest);
+ if(provenanceBytes.length>16384||(manifestBytes&&manifestBytes.length>16384))
+  fail("metadata exceeds 16 KiB");
+ await mkdir(dirname(destination),{recursive:true});
+ await mkdir(root,{recursive:true,mode:0o700});
+ const rootStat=await lstat(root);
+ if(!rootStat.isDirectory()||rootStat.isSymbolicLink())fail("release root symlink");
+ const stage=await mkdtemp(join(root,".staging-"));
+ let pointerDir=null;
+ try{
+  await writeFile(join(stage,"guest.wasm"),bytes,{mode:0o400,flag:"wx"});
+  await writeFile(join(stage,"provenance.json"),provenanceBytes,{mode:0o400,flag:"wx"});
+  if(manifestBytes)await writeFile(join(stage,"artifact.json"),manifestBytes,{mode:0o400,flag:"wx"});
+  await writeFile(join(stage,"seal.json"),canonical(seal),{mode:0o400,flag:"wx"});
+  await verifyDir(stage,releaseSha256);
+  await chmod(stage,0o500);
+  const destinationDir=join(root,releaseSha256);
+  try{await rename(stage,destinationDir)}
+  catch(error){
+   if(!["EEXIST","ENOTEMPTY"].includes(error.code))throw error;
+  }
+  // Reject preexisting conflicting/replaced content, even if name matches.
+  await verifyDir(destinationDir,releaseSha256);
+  pointerDir=await mkdtemp(join(dirname(pointer),".oreslang-pointer-"));
+  const temporaryPointer=join(pointerDir,"current.json");
+  await writeFile(temporaryPointer,canonical({schemaVersion:1,releaseSha256}),
+    {mode:0o400,flag:"wx"});
+  await rename(temporaryPointer,pointer);
+  return {releaseSha256,pointer,directory:destinationDir,wasmSha256:seal.fileHashes.wasm};
+ }finally{
+  await rm(stage,{recursive:true,force:true});
+  if(pointerDir)await rm(pointerDir,{recursive:true,force:true});
+ }
+}
