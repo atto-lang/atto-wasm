@@ -36,9 +36,19 @@ const paths=output=>({root:output+".releases",pointer:output+".current.json"});
 const canonical=x=>Buffer.from(JSON.stringify(x)+"\n");
 // Keep runtime admission aligned with atomic-release-v1.schema.json, which
 // specifies closed records. Digest equality is not a schema/authority check.
+// Closed JSON record admission must reject inherited, hidden, symbol and
+// accessor properties, not merely count enumerable names. In particular,
+// getters could otherwise return different values during validation and seal
+// serialization, producing inconsistent source-of-authority records.
 const exactKeys=(value,keys)=>value!==null&&typeof value==="object"&&
- !Array.isArray(value)&&Object.keys(value).length===keys.length&&
- keys.every(key=>Object.hasOwn(value,key));
+ !Array.isArray(value)&&
+ [Object.prototype,null].includes(Object.getPrototypeOf(value))&&
+ Reflect.ownKeys(value).length===keys.length&&
+ keys.every(key=>{
+  const descriptor=Object.getOwnPropertyDescriptor(value,key);
+  return !!descriptor&&descriptor.enumerable===true&&
+    Object.hasOwn(descriptor,"value");
+ });
 // Explicit Linux/POSIX durability barrier. On filesystems without directory
 // fsync support this fails closed rather than claiming persistence.
 async function fsyncDirectory(dir){
@@ -55,7 +65,10 @@ async function durableWrite(path,bytes){
 // prevents a file-path substitution from turning a validated regular file into
 // a symlink. Chunked reads stop at the cap even if a file grows while reading.
 async function safeFile(path,limit){
- const handle=await open(path,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW);
+ // O_NOFOLLOW denies symlinks. O_NONBLOCK additionally prevents a substituted
+ // FIFO/device pathname from parking the verifier before fstat can reject it.
+ const handle=await open(path,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|
+   fsConstants.O_NONBLOCK);
  try{
   const stat=await handle.stat();
   if(!stat.isFile()||stat.size>limit)fail("invalid file");
