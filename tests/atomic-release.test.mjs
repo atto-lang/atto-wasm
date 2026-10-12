@@ -87,6 +87,7 @@ test("tampered sealed bytes and forged current pointers fail closed",async()=>{
   await assert.rejects(publishAtomicRelease({
    output:w.output,wasm:release.wasm,manifest:release.manifest,provenance:release.provenance
   }),/release content mutated/);
+  await chmod(w.output+".current.json",0o600);
   await writeFile(w.output+".current.json",JSON.stringify({
    schemaVersion:1,releaseSha256:"0".repeat(64)
   })+"\n");
