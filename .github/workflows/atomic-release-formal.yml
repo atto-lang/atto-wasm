@@ -28,3 +28,14 @@ jobs:
           fi
           grep -q "Invariant NoPartialPointer is violated" /tmp/unsafe-tlc.log || { cat /tmp/unsafe-tlc.log; exit 1; }
           echo "PASS: deliberate pre-verify pointer mutation produced TLC safety counterexample"
+      - name: Verify durable pointer and pinned-reader retention after crash
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -deadlock -cleanup -config formal/AtomicRecovery.cfg formal/AtomicRecovery.tla
+      - name: Unsafe removal of a release held by a reader must fail
+        shell: bash
+        run: |
+          set -euo pipefail
+          if java -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -deadlock -cleanup -config formal/AtomicRecoveryUnsafe.cfg formal/AtomicRecovery.tla > /tmp/unsafe-recovery.log 2>&1; then
+            echo "UNSAFE reader model unexpectedly passed"; cat /tmp/unsafe-recovery.log; exit 1
+          fi
+          grep -q "Invariant ReaderPinnedReleasePresent is violated" /tmp/unsafe-recovery.log || { cat /tmp/unsafe-recovery.log; exit 1; }
+          echo "PASS: unsafe garbage collection of reader-pinned release violated TLC invariant"
