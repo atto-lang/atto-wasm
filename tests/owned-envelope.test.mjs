@@ -246,3 +246,21 @@ test("an accessor cannot redefine schema hash fields during normalization",async
  await assert.rejects(encodeMessage(schema,{variant:"Accessor",fields:{v:[1n]}}),/invalid list shape/);
  assert.equal(reads,0,"accessor must never run in ABI normalization");
 });
+
+
+test("hidden or symbol-bearing schema keys cannot bypass closed ABI shape",async()=>{
+ const msg={variant:"Compute",fields:{text:"safe",n:42n}};
+ const hidden={...contract};
+ Object.defineProperty(hidden,"unsafeGrant",{value:true,enumerable:false});
+ const symbolic={...contract};
+ Object.defineProperty(symbolic,Symbol("unsafeGrant"),{value:true,enumerable:false});
+ const nested={...contract,variants:contract.variants.map(v=>({...v}))};
+ Object.defineProperty(nested.variants[0].fields[0],Symbol("capability"),{value:"net"});
+ for(const bad of [hidden,symbolic,nested])
+  await assert.rejects(encodeMessage(bad,msg),/invalid (contract|field) shape/);
+ const valid=await encodeMessage(contract,msg);
+ const fieldMessage={variant:"Compute",fields:{text:"safe",n:42n}};
+ Object.defineProperty(fieldMessage.fields,"hidden",{value:"bad",enumerable:false});
+ await assert.rejects(encodeMessage(contract,fieldMessage),/invalid message fields shape/);
+ assert.deepEqual(await decodeMessage(contract,valid),msg);
+});
