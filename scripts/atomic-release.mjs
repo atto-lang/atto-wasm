@@ -5,6 +5,8 @@
 import {createHash} from "node:crypto";
 import {readFile,writeFile,rename,rm,mkdir,mkdtemp,lstat,chmod} from "node:fs/promises";
 import {join,dirname,resolve} from "node:path";
+import {assertCoreI64Entry} from "./core-i64-abi.mjs";
+import {inspectWasmBytes} from "./inspect-core-memory.mjs";
 const digest=b=>createHash("sha256").update(b).digest("hex");
 const hex=x=>typeof x==="string"&&/^[0-9a-f]{64}$/.test(x);
 const fail=x=>{throw Error("invalid atomic Oreslang release: "+x)};
@@ -27,7 +29,34 @@ async function safeJSON(path){
 function descriptorFor(wasm,manifest,provenance){
  if(wasm.length<8||wasm.length>16777216)fail("Wasm budget");
  if(provenance?.wasmSha256!==digest(wasm))fail("invalid provenance digest");
- if(manifest!==null&&(manifest?.wasmSha256!==digest(wasm)||
+ if(!WebAssembly.validate(wasm))fail("invalid executable Wasm");
+ if(!provenance||typeof provenance!=="object"||Array.isArray(provenance)||
+    !["llvm-ores-to-wasm32-core-experimental"].includes(provenance.kind)||
+    provenance.schemaVersion!==1||
+    !["compilerSha256","sourceSha256","llvmIrSha256"].every(k=>
+      hex(provenance[k]))||!hex(provenance.wasmSha256)||
+    !Number.isSafeInteger(provenance.wasmBytes)||provenance.wasmBytes!==wasm.length||
+    typeof provenance.exportName!=="string"||
+    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(provenance.exportName))
+   fail("invalid producer record");
+ if(WebAssembly.Module.imports(new WebAssembly.Module(wasm)).length!==0)
+   fail("guest Wasm host imports forbidden");
+ try{assertCoreI64Entry(wasm,provenance.exportName)}
+ catch{fail("invalid core i64 entry ABI")}
+ const memory=inspectWasmBytes(wasm,{maxModuleBytes:16777216,maxMemoryPages:2});
+ if(memory.memoryCount!==1||!memory.hasMemoryMaximum||memory.memoryMaximum!==2)
+   fail("invalid bounded 2-page guest memory");
+
+ if(manifest!==null&&(manifest?.schemaVersion!==1||
+   manifest.artifactType!=="oreslang.core-wasm.i64-v1"||
+   manifest.target!=="wasm32"||manifest.backend!=="wasm"||
+   !["browser","edge-js","edge-wasi"].includes(manifest.environment)||
+   manifest.entry!==provenance.exportName||
+   manifest.wasmBytes!==wasm.length||manifest.memory?.maximumPages!==2||
+   !Array.isArray(manifest.imports)||manifest.imports.length!==0||
+   !Array.isArray(manifest.requiredCapabilities)||
+   manifest.requiredCapabilities.length!==0||
+   manifest?.wasmSha256!==digest(wasm)||
    manifest.producer?.sourceSha256!==provenance.sourceSha256||
    manifest.producer?.compilerSha256!==provenance.compilerSha256||
    manifest.producer?.llvmIrSha256!==provenance.llvmIrSha256))
