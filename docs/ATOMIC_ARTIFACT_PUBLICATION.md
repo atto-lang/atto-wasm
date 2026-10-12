@@ -22,6 +22,23 @@ hashes, and checks the manifest/provenance consistency before returning
 guest bytes. They must not infer readiness from the presence of individual
 sidecar files.
 
+A failure **before** pointer rename leaves the previous pointer selected.
+After a successful pointer rename, a failed pointer-parent `fsync` is an
+**uncertain durability outcome**, not an aborted publication. The publisher
+throws `AtomicReleaseCommitUncertainError` (`code =
+"ATOMIC_RELEASE_COMMIT_UNCERTAIN"`) with the attempted release SHA and
+pointer location. A caller must inspect `readAtomicRelease(output)` and
+reconcile its current release against the attempted SHA before retrying.
+This inspection proves currently visible verified bytes, not whether a failed
+power-loss durability barrier persisted through a real crash. External effects
+must never be replayed solely because this exception was raised.
+If the pointer fsync **succeeds** but later temporary-directory cleanup fails,
+publication still returns the committed release identity with a
+`cleanupWarning.code = "ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED"`.
+The warning is an operator recovery task, not a transaction rollback. Recovery
+inspection remains read-only, and cleanup must not delete a reader-pinned
+release.
+
 A failed or cancelled compilation before publication never advances the
 pointer. Independent concurrent publishers may race to advance the pointer;
 readers will observe a *complete validated* release from one publisher,
