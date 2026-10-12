@@ -524,3 +524,29 @@ test("process termination at three publication barriers never exposes a partial 
   }finally{await cleanup(w.dir)}
  }
 });
+
+
+test("compiler bridge preserves confirmed commit through three cleanup failures",async()=>{
+ const w=await workspace();
+ try{
+  const result=await compileOresToWasm({...w,
+   publication:"atomic",environment:"browser",
+   __testBeforeAtomicCleanup:()=>{throw Error("injected publisher cleanup failure")},
+   __testAfterLockCleanup:()=>{throw Error("injected lock cleanup failure")},
+   __testAfterScratchCleanup:()=>{throw Error("injected scratch cleanup failure")}
+  });
+  assert.match(result.releaseSha256,/^[0-9a-f]{64}$/);
+  assert.equal(result.cleanupWarning.code,"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED");
+  assert.deepEqual(result.cleanupWarnings.map(warning=>warning.code),[
+   "ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED",
+   "ARTIFACT_POST_COMMIT_CLEANUP_FAILED",
+   "ARTIFACT_POST_COMMIT_CLEANUP_FAILED"
+  ]);
+  assert.deepEqual(result.cleanupWarnings.slice(1).map(x=>x.scope),["lock","scratch"]);
+  const release=await readAtomicRelease(w.output);
+  assert.equal(release.releaseSha256,result.releaseSha256);
+  assert.equal(execute(release.wasm),42n);
+  const state=await inspectAtomicReleaseState(w.output);
+  assert.equal(state.current,result.releaseSha256);
+ }finally{await cleanup(w.dir)}
+});
