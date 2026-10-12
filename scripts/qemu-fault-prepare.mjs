@@ -45,7 +45,14 @@ for(const expected of [42,43]){
  }else{
   await writeFile(join(dir,"payload","next-provenance.json"),JSON.stringify(provenance)+"\n");
   await writeFile(join(dir,"payload","next-manifest.json"),JSON.stringify(manifest)+"\n");
-  next.push({expected,wasmSha256:sha(wasm)});
+  // Derive the expected identity from the exact canonical seal, not from
+  // the return value alone. The guest must later select THIS release, not an
+  // unrelated valid i64-43 guest with a different hash.
+  const metadataBytes=x=>Buffer.from(JSON.stringify(x)+"\n");
+  const seal={schemaVersion:1,type:"oreslang.atomic-release-v1",
+   fileHashes:{wasm:sha(wasm),manifest:sha(metadataBytes(manifest)),
+    provenance:sha(metadataBytes(provenance))}};
+  next.push({expected,releaseSha256:sha(metadataBytes(seal)),wasmSha256:sha(wasm)});
  }
 }
 await writeFile(join(dir,"payload","expected.json"),JSON.stringify(next)+"\n");
