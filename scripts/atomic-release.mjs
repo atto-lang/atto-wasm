@@ -10,6 +10,19 @@ import {inspectWasmBytes} from "./inspect-core-memory.mjs";
 const digest=b=>createHash("sha256").update(b).digest("hex");
 const hex=x=>typeof x==="string"&&/^[0-9a-f]{64}$/.test(x);
 const fail=x=>{throw Error("invalid atomic Oreslang release: "+x)};
+// A pointer rename is the visibility/linearization point. If the subsequent
+// directory sync fails, the pointer might already be visible or durable.
+// Never translate that condition into an ordinary "nothing published" error.
+export class AtomicReleaseCommitUncertainError extends Error {
+ constructor({pointer,releaseSha256,cause}) {
+  super("atomic release pointer was renamed but durable commit is unconfirmed; inspect the verified current pointer before retrying",{cause});
+  this.name="AtomicReleaseCommitUncertainError";
+  this.code="ATOMIC_RELEASE_COMMIT_UNCERTAIN";
+  this.pointer=pointer;
+  this.releaseSha256=releaseSha256;
+  this.mayBePublished=true;
+ }
+}
 const paths=output=>({root:output+".releases",pointer:output+".current.json"});
 const canonical=x=>Buffer.from(JSON.stringify(x)+"\n");
 // Keep runtime admission aligned with atomic-release-v1.schema.json, which
@@ -156,7 +169,12 @@ export async function readAtomicRelease(output){
  * into place before one pointer rename (the linearization point).
  * Concurrent writers are last-writer-wins among verified complete releases.
  */
-export async function publishAtomicRelease({output,wasm,manifest=null,provenance}){
+export async function publishAtomicRelease({
+ output,wasm,manifest=null,provenance,
+ // Test-only fault hooks run AFTER genuine IO barriers. They can only cause
+ // a failure, never suppress fsync or alter the contents being sealed.
+ __testAfterReleaseInstall,__testAfterPointerRename,__testBeforeCleanup
+}){
  if(typeof output!=="string"||!output)fail("missing output");
  if(!(wasm instanceof Uint8Array))fail("invalid Wasm bytes");
  const destination=resolve(output),{root,pointer}=paths(destination);
@@ -173,7 +191,7 @@ export async function publishAtomicRelease({output,wasm,manifest=null,provenance
  // Persist the release-root directory entry before any pointer can refer to it.
  await fsyncDirectory(dirname(root));
  const stage=await mkdtemp(join(root,".staging-"));
- let pointerDir=null;
+ let pointerDir=null,primaryError=null,committedResult=null;
  try{
   await durableWrite(join(stage,"guest.wasm"),bytes);
   await durableWrite(join(stage,"provenance.json"),provenanceBytes);
@@ -192,22 +210,48 @@ export async function publishAtomicRelease({output,wasm,manifest=null,provenance
   await verifyDir(destinationDir,releaseSha256);
   // Release directory entry becomes durable before we expose its identity.
   await fsyncDirectory(root);
+  if(__testAfterReleaseInstall)await __testAfterReleaseInstall();
   pointerDir=await mkdtemp(join(dirname(pointer),".oreslang-pointer-"));
   const temporaryPointer=join(pointerDir,"current.json");
   await durableWrite(temporaryPointer,canonical({schemaVersion:1,releaseSha256}));
   await fsyncDirectory(pointerDir);
   await rename(temporaryPointer,pointer);
-  // Successful return means the pointer rename has crossed a durability
-  // barrier as well as the atomic visibility point.
-  await fsyncDirectory(dirname(pointer));
-  return {releaseSha256,pointer,directory:destinationDir,wasmSha256:seal.fileHashes.wasm};
+  // The pointer is already visible here, even if the next sync fails.
+  // A retrying caller must NOT assume that the previous pointer remains.
+  try {
+   if(__testAfterPointerRename)await __testAfterPointerRename();
+   await fsyncDirectory(dirname(pointer));
+  }catch(error){
+   throw new AtomicReleaseCommitUncertainError({pointer,releaseSha256,cause:error});
+  }
+  committedResult={releaseSha256,pointer,directory:destinationDir,wasmSha256:seal.fileHashes.wasm};
+  return committedResult;
+ }catch(error){
+  primaryError=error;
+  throw error;
  }finally{
-  // A concurrent winner may already have installed this identity. When a
-  // rename loses, stage still has its protective non-writable mode; restore
-  // permission only for the private loser before discarding it.
-  try{await chmod(stage,0o700)}catch(error){if(error.code!=="ENOENT")throw error}
-  await rm(stage,{recursive:true,force:true});
-  if(pointerDir)await rm(pointerDir,{recursive:true,force:true});
+  // Cleanup errors must not erase the more important commit outcome.
+  // A crashed/failed cleanup may leave an orphan requiring inspection.
+  try{
+   if(__testBeforeCleanup)await __testBeforeCleanup();
+   try{await chmod(stage,0o700)}
+   catch(error){if(error.code!=="ENOENT")throw error}
+   await rm(stage,{recursive:true,force:true});
+   if(pointerDir)await rm(pointerDir,{recursive:true,force:true});
+  }catch(cleanupError){
+   if(primaryError){
+    primaryError.cleanupFailure=String(cleanupError?.message||cleanupError).slice(0,256);
+   }else if(committedResult){
+    // Durable publication is a success, not an abort. Surface the orphaned
+    // temp cleanup as a warning for operator inspection.
+    committedResult.cleanupWarning={
+     code:"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED",
+     message:String(cleanupError?.message||cleanupError).slice(0,256)
+    };
+   }else{
+    throw cleanupError;
+   }
+  }
  }
 }
 
