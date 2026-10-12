@@ -109,3 +109,92 @@ jobs:
           print('PASS_INDEPENDENT_SEALED_WASM_IDENTICAL',a['guests'])
           print('INDEPENDENT_REPRO_SOURCE_TREE',tree)
           PY
+
+  native-oci-rebuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Prove checked-out source matches exact Git tree
+        run: bash scripts/verify-source-tree.sh
+      - name: Rebuild compiler in digest-pinned Ubuntu 24.04 amd64 container
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/oci-${{ matrix.replica }}"
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD:/src:ro" \
+            -v "$RUNNER_TEMP/oci-${{ matrix.replica }}:/out" \
+            -e SOURCE_TREE="$source_tree" \
+            -e REPLICA="${{ matrix.replica }}" \
+            -w /src \
+            docker.io/library/ubuntu@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b \
+            bash -euc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends python3 lsb-release \
+                zlib1g-dev libzstd-dev libedit-dev libcurl4-openssl-dev libxml2-dev \
+                "build-essential=12.10ubuntu1" "cmake=3.28.3-1build7" \
+                "clang=1:18.0-59~exp2" "lld=1:18.0-59~exp2" \
+                "llvm-dev=1:18.0-59~exp2"
+              python3 scripts/verify-native-toolchain-lock.py verify
+              cmake -S tests/fixtures/pinned-llvm -B /tmp/ores-native-oci \
+                -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+              cmake --build /tmp/ores-native-oci --parallel 2
+              python3 scripts/record-native-oci-repro.py \
+                "$REPLICA" /tmp/ores-native-oci/oreslang-llvmc /out
+            '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-oci-repro-${{ matrix.replica }}
+          path: ${{ runner.temp }}/oci-${{ matrix.replica }}
+          if-no-files-found: error
+          retention-days: 30
+  native-oci-compare:
+    needs: native-oci-rebuild
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate source tree
+        run: bash scripts/verify-source-tree.sh
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-oci-repro-*
+          path: build/oci-compare
+          merge-multiple: true
+      - name: Compare independent digest-pinned OCI compiler and transitive graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          base=pathlib.Path('build/oci-compare')
+          expected=['oci-a.json','oci-b.json','packages-a.txt','packages-b.txt']
+          if sorted(p.name for p in base.iterdir())!=expected:
+              raise SystemExit('missing/extra OCI reproducibility evidence')
+          observations=[]
+          for replica in ('a','b'):
+              doc=json.loads((base/f'oci-{replica}.json').read_text())
+              contents=(base/f'packages-{replica}.txt').read_bytes()
+              if hashlib.sha256(contents).hexdigest()!=doc['installedDpkgGraphSha256']:
+                  raise SystemExit('OCI package graph digest mismatch')
+              if len(contents.splitlines())!=doc['installedDpkgCount']:
+                  raise SystemExit('OCI package count mismatch')
+              observations.append(doc)
+          a,b=observations
+          tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip()
+          lock=hashlib.sha256(pathlib.Path('contracts/native-toolchain-ubuntu2404.lock.json').read_bytes()).hexdigest()
+          if a!=b or a['sourceTree']!=tree or a['nativePackageLockSha256']!=lock:
+              print('OCI_A',a)
+              print('OCI_B',b)
+              raise SystemExit('digest-pinned OCI builds or source/graph identities disagree')
+          print('PASS_INDEPENDENT_DIGEST_PINNED_OCI_COMPILER',a['nativeCompilerSha256'])
+          print('PASS_INDEPENDENT_OCI_PACKAGE_GRAPH',a['installedDpkgGraphSha256'])
+          print('OCI_REPRO_SOURCE_GIT_TREE',tree)
+          PY
