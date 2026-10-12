@@ -45,3 +45,25 @@ malicious same-user filesystem actor changing directories after verification.
 The publication regressions use an executable compiler stand-in; a malformed
 fixture that aborts before the intended publication stage does not count as
 negative-test coverage.
+
+
+## Command-line policy and descriptor admission
+
+CLI options are single-assignment. Repeating `--compiler`, `--source`,
+`--output`, `--export`, `--clang`, `--compiler-sha256`, or
+`--environment` rejects the entire invocation before reading inputs or
+creating publishable artifacts. The last occurrence never silently overrides
+the caller's intended compiler pin or destination.
+
+The implementation uses bounded descriptor reads with
+`O_RDONLY | O_NONBLOCK | O_NOFOLLOW`, verifies regular-file identity on the
+opened descriptor, and rejects size growth during reads. Linux CI includes a
+timeout-bounded named-pipe regression for compiler and source paths, plus a
+real child-process test for every duplicate CLI option. The budgets remain
+1 MiB for source, 256 MiB for compiler and 16 MiB for linked Wasm.
+
+These checks do **not** pin a dynamic library, script interpreter, external
+toolchain, source-import graph or a hostile output directory. The caller must
+own and protect the output directory and explicitly trust or attest those
+external dependencies. A successful host-side test is not evidence of full
+source-compiled Oreslang actor execution or malicious-compiler isolation.
