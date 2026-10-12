@@ -44,11 +44,35 @@ garbage collection requires a separate quiescence-aware design.
   **does not** have atomic bundle semantics. Production readers requiring
   atomicity must explicitly opt in and use the verified reader; a future
   breaking release can remove legacy publication.
-- The current implementation uses a private, trusted same-filesystem release
-  directory. It is not tamperproof against a user who has write permissions
-  inside that directory, filesystem corruption, malicious storage, or
-  cryptographic hash collisions. No `fsync` durability across power failure
-  is claimed. A process crash may leave an unreferenced sealed directory.
+- Durability now uses synchronous file writes with file `fsync`, a staged
+  directory `fsync`, a release-root `fsync` after the sealed-directory
+  rename, and destination-parent `fsync` after atomically replacing the
+  current pointer. A successful publication return has crossed these Linux/
+  POSIX filesystem synchronization barriers. On storage without reliable
+  directory `fsync`, this implementation fails rather than promising a
+  durable commit. Hardware controllers, filesystem bugs, or an actual
+  power interruption are *not* modeled by ordinary unit tests.
+- The current implementation assumes a private, trusted same-filesystem
+  directory, and cannot guarantee integrity against writable storage,
+  malicious processes with access to the release tree, filesystem corruption
+  or SHA-256 collisions. A process crash may leave an unreferenced sealed
+  directory or partial staging tree.
+- `inspectAtomicReleaseState(output)` reports the current verified release,
+  stale staging directories, older independently verified releases and
+  invalid entries without modifying storage. These diagnostics support
+  explicit operator recovery. **There is no automated garbage collector**:
+  old versions may be pinned by live readers and must not be deleted without
+  a quiescence or reader-lease protocol.
+- Contracts are recorded in `schemas/atomic-release-v1.schema.json` and
+  `contracts/atomic-release.tsp`. The contract workflow compiles TypeSpec,
+  validates four actual compiler-produced JSON records and checks deliberate
+  invalid examples. Cross-file cryptographic equality and executable Wasm ABI
+  are always checked by the verified reader, not by JSON Schema alone.
+- `.github/workflows/native-llvm-atomic.yml` vendors and SHA-verifies the
+  minimal exact upstream LLVM compiler build inputs, compiles two genuine
+  Oreslang programs without cross-repository credentials and validates their
+  atomic releases. Browser Workers are covered separately by the funded
+  browser integration gate until originating Actions and reviews are restored.
 - `chmod` is defense in depth against accidental modification, not an
   immutable file attribute. Readers recompute every hash.
 - The bounded TLA+ `formal/AtomicRelease.tla` models two competing writers,
