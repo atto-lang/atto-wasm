@@ -101,11 +101,21 @@ jobs:
             build/source-llvm/oreslang-llvmc \
             build/native-toolchain-attestation.json
           python3 -m json.tool build/native-toolchain-attestation.json > /dev/null
-          sha256sum build/native-toolchain-attestation.json
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          audit=json.loads(pathlib.Path("build/native-toolchain-attestation.json").read_text())
+          graph=pathlib.Path("build/native-installed-packages.txt").read_bytes()
+          assert hashlib.sha256(graph).hexdigest()==audit["installedDpkgGraphSha256"]
+          assert len(graph.splitlines())==audit["installedDpkgPackageCount"]
+          print("PASS native full package graph verified",audit["installedDpkgPackageCount"])
+          PY
+          sha256sum build/native-toolchain-attestation.json build/native-installed-packages.txt
       - name: Preserve exact-build native toolchain observation
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-wasm-toolchain-attestation
-          path: build/native-toolchain-attestation.json
+          path: |
+            build/native-toolchain-attestation.json
+            build/native-installed-packages.txt
           if-no-files-found: error
           retention-days: 30
