@@ -315,3 +315,40 @@ test("canonical release seal rejects duplicate keys and alternate encodings",asy
   assert.equal(execute(restored.wasm),42n);
  }finally{await cleanup(w.dir)}
 });
+
+test("strict atomic metadata admission matches closed schema and refuses extra authority",async()=>{
+ const w=await workspace();
+ try{
+  const baseline=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const release=await readAtomicRelease(w.output);
+  const previous=await readFile(w.output+".current.json");
+  const extraProducers=[
+   {...release.provenance,untrusted:true},
+   {...release.provenance,importCount:1},
+   {...release.provenance,clangVersion:""},
+   {...release.provenance,note:42},
+   {...release.provenance,note:"x".repeat(1025)},
+  ];
+  for(const provenance of extraProducers){
+   await assert.rejects(publishAtomicRelease({
+    output:w.output,wasm:release.wasm,manifest:release.manifest,provenance
+   }),/invalid producer record/);
+   assert.deepEqual(await readFile(w.output+".current.json"),previous);
+  }
+  const badManifests=[
+   {...release.manifest,hostCapabilityGrants:["net"]},
+   {...release.manifest,producer:{...release.manifest.producer,debugMode:true}},
+   {...release.manifest,memory:{maximumPages:2,unbounded:true}},
+   {...release.manifest,entry:"m".repeat(129)},
+   {...release.manifest,requiredCapabilities:{"0":"net",length:0}},
+  ];
+  for(const manifest of badManifests){
+   await assert.rejects(publishAtomicRelease({
+    output:w.output,wasm:release.wasm,manifest,provenance:release.provenance
+   }),/inconsistent manifest provenance/);
+   assert.deepEqual(await readFile(w.output+".current.json"),previous);
+  }
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
