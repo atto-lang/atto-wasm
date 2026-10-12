@@ -4,13 +4,41 @@
  * There is no fallback or mock compiler; caller must pass a real binary.
  */
 import {spawnSync} from "node:child_process";
+import {constants as fsConstants} from "node:fs";
 import {createHash} from "node:crypto";
-import {readFile,writeFile,mkdir,mkdtemp,rm,rename,realpath,stat} from "node:fs/promises";
+import {writeFile,mkdir,mkdtemp,rm,rename,realpath,stat,open} from "node:fs/promises";
 import {dirname,resolve,isAbsolute,join,basename} from "node:path";
 import {fileURLToPath} from "node:url";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
 const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES=16*1024*1024;
+// A preflight stat(path) is not an admission guard against an attacker
+// replacing that pathname with a FIFO or growing file before readFile(path).
+// Use one nonblocking, nofollow descriptor for both fstat and bounded reads.
+async function readBounded(path,limit,label){
+ const limitError=label==="source"?"source exceeds 1 MiB compiler bridge budget":
+  label==="compiler"?"compiler exceeds 256 MiB executable budget":
+  label==="linked Wasm"?"linked Wasm exceeds 16 MiB artifact budget":
+  label+" exceeds configured byte budget";
+ const fd=await open(path,fsConstants.O_RDONLY|fsConstants.O_NONBLOCK|fsConstants.O_NOFOLLOW);
+ try{
+  const st=await fd.stat();
+  if(!st.isFile())throw Error(label+" is not a regular file");
+  if(st.size===0)throw Error(label+" is empty");
+  if(st.size>limit)throw Error(limitError);
+  const chunks=[];let total=0;
+  for(;;){
+   const buf=Buffer.allocUnsafe(Math.min(65536,limit-total+1));
+   const {bytesRead}=await fd.read(buf,0,buf.length,null);
+   if(bytesRead===0)break;
+   total+=bytesRead;
+   if(total>limit)throw Error(limitError);
+   chunks.push(buf.subarray(0,bytesRead));
+  }
+  if(total===0)throw Error(label+" is empty");
+  return Buffer.concat(chunks,total);
+ }finally{await fd.close()}
+}
 function rejectStartSection(bytes){
  let i=8;
  const u32=()=>{let value=0;for(let j=0;j<5;j++){
@@ -71,7 +99,10 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
     throw Error("output or artifact metadata path overlaps a compiler/source input");
   }catch(error){if(error?.code!=="ENOENT")throw error}
  }
- const [sourceBytes,compilerBytes]=await Promise.all([readFile(sourcePath),readFile(compilerPath)]);
+ const [sourceBytes,compilerBytes]=await Promise.all([
+  readBounded(sourcePath,MAX_SOURCE_BYTES,"source"),
+  readBounded(compilerPath,MAX_COMPILER_BYTES,"compiler")
+ ]);
  if(sourceBytes.length>MAX_SOURCE_BYTES)throw Error("source exceeds 1 MiB compiler bridge budget");
  if(compilerBytes.length>MAX_COMPILER_BYTES)throw Error("compiler exceeds 256 MiB executable budget");
  const actualCompilerHash=sha(compilerBytes);
@@ -93,15 +124,15 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  // filesystem principal; this is not a sandbox for a malicious compiler.
  await writeFile(stagedCompiler,compilerBytes,{mode:0o500,flag:"wx"});
  const ir=run(stagedCompiler,environment?["--target=wasm32",stagedSource]:[stagedSource]);
- if(sha(await readFile(stagedCompiler))!==actualCompilerHash)
+ if(sha(await readBounded(stagedCompiler,MAX_COMPILER_BYTES,"staged compiler"))!==actualCompilerHash)
   throw Error("staged compiler executable changed during execution");
  // The executable itself is also caller-owned mutable input. Never publish
  // provenance tied to a compiler digest if its executable changed in flight.
- if(sha(await readFile(compilerPath))!==actualCompilerHash)
+ if(sha(await readBounded(compilerPath,MAX_COMPILER_BYTES,"compiler"))!==actualCompilerHash)
   throw Error("compiler executable changed during execution; refusing stale provenance");
  // Reject mutation of the snapshotted compilation input even when the
  // original caller path remains unchanged.
- if(sha(await readFile(stagedSource))!==sha(sourceBytes))
+ if(sha(await readBounded(stagedSource,MAX_SOURCE_BYTES,"staged source"))!==sha(sourceBytes))
   throw Error("staged compiler input changed during execution");
  if(environment&&!/target triple = "wasm32-unknown-unknown"/.test(ir))
   throw Error("compiler did not emit wasm32 target-marked IR");
@@ -116,7 +147,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  const wasmStat=await stat(provisional);
  if(!wasmStat.isFile()||wasmStat.size>MAX_WASM_BYTES)
   throw Error("linked Wasm exceeds 16 MiB artifact budget");
- const wasm=await readFile(provisional);
+ const wasm=await readBounded(provisional,MAX_WASM_BYTES,"linked Wasm");
  if(wasm.length>MAX_WASM_BYTES)throw Error("linked Wasm exceeds 16 MiB artifact budget");
  if(!WebAssembly.validate(wasm))throw Error("linker emitted invalid core Wasm");
  rejectStartSection(wasm);
