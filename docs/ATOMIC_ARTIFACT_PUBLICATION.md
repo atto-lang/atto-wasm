@@ -34,6 +34,12 @@ garbage collection requires a separate quiescence-aware design.
   existing legacy .wasm/sidecar layout; legacy publication refuses an existing
   .current.json pointer or .releases directory. Migrate to a new output
   pathname (or perform an explicit quiesced migration), never silently mix.
+  Cooperating compiler processes acquire an exclusive per-output
+  `<output>.publication.lock` and repeat their mixed-mode check immediately
+  before publication. A crashed process may leave this directory: publishing
+  then fails closed; cleanup must be operator-controlled after verifying no
+  active publisher. This does not coordinate arbitrary untrusted filesystem
+  writers who ignore the lock.
 - The legacy layout remains available for existing callers and tests and
   **does not** have atomic bundle semantics. Production readers requiring
   atomicity must explicitly opt in and use the verified reader; a future
