@@ -98,6 +98,10 @@ jobs:
           a=json.loads((folder/'native-a.json').read_text())
           b=json.loads((folder/'native-b.json').read_text())
           tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip()
+          import re
+          lock=hashlib.sha256(pathlib.Path('contracts/native-toolchain-ubuntu2404.lock.json').read_bytes()).hexdigest()
+          if a.get('nativeToolchainLockSha256')!=lock or not isinstance(a.get('nativeCompilerSha256'),str) or not re.fullmatch(r'[0-9a-f]{64}',a['nativeCompilerSha256']):
+              raise SystemExit('invalid host toolchain lock or compiler digest')
           if a!=b or a['sourceTree']!=tree:
               for key in sorted(set(a)|set(b)):
                   if a.get(key)!=b.get(key):
@@ -190,6 +194,14 @@ jobs:
           a,b=observations
           tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip()
           lock=hashlib.sha256(pathlib.Path('contracts/native-toolchain-ubuntu2404.lock.json').read_bytes()).hexdigest()
+          import re
+          expected_base=('docker.io/library/ubuntu@sha256:'
+              'f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b')
+          digest=lambda value: isinstance(value,str) and bool(re.fullmatch(r'[0-9a-f]{64}',value))
+          if not all(digest(a.get(key)) for key in (
+              'nativeCompilerSha256','installedDpkgGraphSha256',
+              'nativePackageLockSha256')) or a.get('baseImageManifest')!=expected_base:
+              raise SystemExit('unrecognized native compiler digest, package graph or OCI base')
           if a!=b or a['sourceTree']!=tree or a['nativePackageLockSha256']!=lock:
               print('OCI_A',a)
               print('OCI_B',b)
