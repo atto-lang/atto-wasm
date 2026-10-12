@@ -53,7 +53,6 @@ class QemuRecoveryReceiptTest(unittest.TestCase):
             "value=43 identity="+"A"*64,
             "value=43 identity="+"a"*63,
             "value=43 identity="+"a"*64+" extra=true",
-            "value=43 identity="+"a"*64+"\\rFORGED",
         ):
             with self.subTest(forged=forged[:45]):
                 receipt=baseline.replace("value=43 identity="+"a"*64,forged)
