@@ -30,5 +30,17 @@ jobs:
             --option '@typespec/json-schema.file-type=json' \
             --option '@typespec/json-schema.bundleId=https://oreslang.dev/schemas/atomic-typespec-bundle.json' \
             --option '@typespec/json-schema.seal-object-schemas=true'
+      - name: Inspect generated TypeSpec schemas
+        run: |
+          find "$RUNNER_TEMP/atomic-typespec-emitted" -type f -print
+          python3 - <<'PY'
+          import json,os,pathlib
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"atomic-typespec-emitted"
+          for path in sorted(root.rglob("*.json")):
+              doc=json.loads(path.read_text())
+              print("EMITTED_SCHEMA_FILE",str(path), "keys", list(doc)[:20],
+                    "defs", list(doc.get("$defs",{}))[:25],
+                    "id",doc.get("$id"))
+          PY
       - name: Differential conformance of normative and emitted JSON Schema
         run: python3 scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures" "$RUNNER_TEMP/atomic-typespec-emitted"
