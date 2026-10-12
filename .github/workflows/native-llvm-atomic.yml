@@ -40,6 +40,8 @@ jobs:
                   raise SystemExit("exact pinned Git source mismatch: "+path)
           print("PASS",len(pins),"exact private LLVM and .ores source blob pins")
           PY
+      - name: Reject malformed and ambiguous native apt package locks
+        run: python3 -m unittest discover -s tests -p 'test_native_toolchain_lock.py' -v
       - name: Build native LLVM Oreslang compiler from pinned source
         shell: bash
         run: |
