@@ -16,6 +16,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
+      - name: Reject forged or incomplete guest recovery transcripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_qemu_recovery_receipts.py' -v
       - name: Install version-locked fixture Clang and disposable QEMU guest kernel
         shell: bash
         run: |
@@ -40,6 +45,17 @@ jobs:
           python3 scripts/qemu-powercut-harness.py \
             "$RUNNER_TEMP/ores-qemu-vmlinuz" /boot/initrd.img-6.8.0-146-generic
           python3 -m json.tool build/qemu-powercut-evidence.json > /dev/null
+          python3 - <<'PY'
+          import json,pathlib,subprocess
+          info=json.loads(pathlib.Path('build/qemu-powercut-evidence.json').read_text())
+          wanted=['__testAfterReleaseRename','__testAfterReleaseInstall',
+                  '__testBeforePointerRename','__testAfterPointerRename','__testBeforeCleanup']
+          tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip()
+          if info.get('sourceTree')!=tree or info.get('checkpoints')!=wanted or (
+              info.get('verifiedColdBoots')!=5 or info.get('uncleanHypervisorStops')!=5):
+              raise SystemExit('QEMU evidence mismatches exact source tree or complete five-case matrix')
+          print('PASS_QEMU_FINAL_EVIDENCE_EXACT_TREE',tree)
+          PY
           sha256sum build/qemu-powercut-evidence.json
       - name: Preserve observed VM power-cut qualification evidence
         if: always()
