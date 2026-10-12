@@ -9,7 +9,7 @@ import {fileURLToPath} from "node:url";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
 
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
-test("compiler execution uses pinned executable bytes, not a mutable source pathname",async()=>{
+test("compiler mutation fails closed without publishing stale pinned provenance",async()=>{
  const dir=await mkdtemp(join(tmpdir(),"ores-compiler-pin-"));
  try{
   const compiler=join(dir,"compiler.mjs"),source=join(dir,"guest.ores"),output=join(dir,"guest.wasm");
@@ -26,16 +26,16 @@ test("compiler execution uses pinned executable bytes, not a mutable source path
   await writeFile(compiler,code,{mode:0o700});await chmod(compiler,0o700);
   await writeFile(source,"pub fnc main(): int { return 42; }\n");
   const pinned=sha(Buffer.from(code));
-  const record=await compileOresToWasm({
+  // The current mainline detects mutation of the original compiler before
+  // publication. A private compiler snapshot is necessary, but successful
+  // publication after a changed original would be stale provenance.
+  await assert.rejects(compileOresToWasm({
    compiler,compilerSha256:pinned,source,output,environment:"browser"
-  });
-  assert.equal(record.compilerSha256,pinned);
-  assert.equal(record.sourceSha256,sha(Buffer.from("pub fnc main(): int { return 42; }\n")));
+  }),/compiler executable changed during execution; refusing stale provenance/);
   assert.notEqual(sha(await readFile(compiler)),pinned);
-  const metadata=JSON.parse(await readFile(output+".artifact.json","utf8"));
-  assert.equal(metadata.producer.compilerSha256,pinned);
-  const wasm=await readFile(output);
-  assert.equal(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.main(),42n);
+  await assert.rejects(readFile(output),/ENOENT/);
+  await assert.rejects(readFile(output+".artifact.json"),/ENOENT/);
+  await assert.rejects(readFile(output+".provenance.json"),/ENOENT/);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
 test("duplicate compiler, output, source or authorization CLI flags are rejected",()=>{
