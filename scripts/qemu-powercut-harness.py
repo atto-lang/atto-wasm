@@ -38,7 +38,7 @@ def sha256(path):
 
 def copy_binary_with_libraries(binary,destination):
  source=Path(binary).resolve(strict=True)
- target=destination/str(binary).lstrip("/")
+ target=destination/"usr/bin/node"
  target.parent.mkdir(parents=True,exist_ok=True)
  shutil.copy2(source,target)
  output=subprocess.check_output(["ldd",str(binary)],text=True)
