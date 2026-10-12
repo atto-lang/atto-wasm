@@ -185,3 +185,28 @@ test("a sparse list cannot bypass the global zero-byte value visit budget",async
   variant:"EmptyTuples",fields:{items:sparse}
  }),/sparse array\/list element/);
 });
+
+
+test("sparse tuple descriptors never hash missing element types as null",async()=>{
+ const holes=new Array(1);
+ const schema={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Tuple",fields:[{name:"value",type:{tuple:holes}}]
+ }]};
+ await assert.rejects(encodeMessage(schema,{
+  variant:"Tuple",fields:{value:[[]]}
+ }),/sparse tuple descriptor/);
+ await assert.rejects(decodeMessage(schema,Uint8Array.of(0)),/sparse tuple descriptor/);
+});
+test("sparse tuple payloads cannot skip zero-byte nested elements",async()=>{
+ const schema={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Tuple",fields:[{name:"value",type:{tuple:[{tuple:[]}]}}]
+ }]};
+ for(const value of [new Array(1)]){
+  await assert.rejects(encodeMessage(schema,{
+   variant:"Tuple",fields:{value}
+  }),/sparse tuple element/);
+ }
+ const dense={variant:"Tuple",fields:{value:[[]]}};
+ const encoded=await encodeMessage(schema,dense);
+ assert.deepEqual(await decodeMessage(schema,encoded),dense);
+});
