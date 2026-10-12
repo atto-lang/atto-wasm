@@ -264,3 +264,65 @@ test("hidden or symbol-bearing schema keys cannot bypass closed ABI shape",async
  await assert.rejects(encodeMessage(contract,fieldMessage),/invalid message fields shape/);
  assert.deepEqual(await decodeMessage(contract,valid),msg);
 });
+
+test("codec never invokes attacker-owned accessors during schema or message admission",async()=>{
+ const good={variant:"Compute",fields:{text:"safe",n:42n}};
+ let accesses=0;
+ const dangerous=()=>{accesses++;throw Error("attacker getter invoked");};
+ const variantType={tuple:["string"]};
+ Object.defineProperty(variantType,"tuple",{enumerable:true,get:dangerous});
+ const badSchema={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Bad",fields:[{name:"value",type:variantType}]
+ }]};
+ await assert.rejects(encodeMessage(badSchema,{variant:"Bad",fields:{value:["safe"]}}),
+  /invalid type shape/);
+ const variants=[{id:1,name:"Bad",fields:[{name:"n",type:"i64"}]}];
+ Object.defineProperty(variants,0,{configurable:true,enumerable:true,get:dangerous});
+ await assert.rejects(encodeMessage({...contract,variants},good),/invalid variants element/);
+ const message={variant:"Compute",fields:{text:"safe",n:42n}};
+ Object.defineProperty(message.fields,"n",{enumerable:true,get:dangerous});
+ await assert.rejects(encodeMessage(contract,message),/invalid message fields shape/);
+ const msg={fields:good.fields};
+ Object.defineProperty(msg,"variant",{enumerable:true,get:dangerous});
+ await assert.rejects(encodeMessage(contract,msg),/invalid message shape/);
+ const enSchema={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Enum",fields:[{name:"tag",type:{enum:[{id:1,name:"Some",payload:"i64"}]}}]
+ }]};
+ const enValue={variant:"Some"};
+ Object.defineProperty(enValue,"value",{enumerable:true,get:dangerous});
+ await assert.rejects(encodeMessage(enSchema,{variant:"Enum",fields:{tag:enValue}}),
+  /invalid enum value shape/);
+ assert.equal(accesses,0,"schema validation must not execute getters");
+ assert.deepEqual(await decodeMessage(contract,await encodeMessage(contract,good)),good);
+});
+
+test("array element accessors and hidden schema array authority reject even for zero-byte elements",async()=>{
+ const schema={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Empty",fields:[{name:"parts",type:{list:{element:{tuple:[]},maxLength:3}}}]
+ }]};
+ let accesses=0;
+ const malicious=[[]];
+ Object.defineProperty(malicious,0,{configurable:true,enumerable:true,get(){
+  accesses++;return [];
+ }});
+ await assert.rejects(encodeMessage(schema,{variant:"Empty",fields:{parts:malicious}}),
+  /invalid array\\/list element element/);
+ const hidden=[[]];
+ Object.defineProperty(hidden,"capability",{enumerable:false,value:"network"});
+ await assert.rejects(encodeMessage(schema,{variant:"Empty",fields:{parts:hidden}}),
+  /invalid array\\/list element shape/);
+ const withSymbol=[[]];
+ Object.defineProperty(withSymbol,Symbol("access"),{value:1});
+ await assert.rejects(encodeMessage(schema,{variant:"Empty",fields:{parts:withSymbol}}),
+  /invalid array\\/list element shape/);
+ const types=["i64"];
+ Object.defineProperty(types,0,{configurable:true,enumerable:true,get(){
+  accesses++;return "i64";
+ }});
+ const maliciousSchema={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Bad",fields:[{name:"part",type:{tuple:types}}]
+ }]};
+ await assert.rejects(encodeMessage(maliciousSchema,{variant:"Bad",fields:{part:[1n]}}),
+  /invalid tuple types element/);
+ assert.equal(accesses,0);
+});
