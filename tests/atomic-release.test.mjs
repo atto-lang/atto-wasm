@@ -288,3 +288,30 @@ test("duplicate-key or noncanonical current pointer never selects a release",asy
   assert.equal((await readAtomicRelease(w.output)).releaseSha256,release.releaseSha256);
  }finally{await cleanup(w.dir)}
 });
+
+test("canonical release seal rejects duplicate keys and alternate encodings",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const release=await readAtomicRelease(w.output);
+  const sealPath=join(release.directory,"seal.json");
+  const good=await readFile(sealPath,"utf8");
+  await chmod(sealPath,0o600);
+  const bad=[
+   good.replace('{"schemaVersion":1,','{"schemaVersion":1,"schemaVersion":1,'),
+   good.replace('{"schemaVersion":1,','{ "schemaVersion":1,'),
+   good.replace(',"type":"oreslang.atomic-release-v1"',',"type":"oreslang.atomic-release-v1","type":"oreslang.atomic-release-v1"'),
+   good.replace('{"schemaVersion":1,"type":"oreslang.atomic-release-v1",','{"type":"oreslang.atomic-release-v1","schemaVersion":1,'),
+   good.replace('"fileHashes":{"wasm":','"fileHashes":{"wasm":"'+release.releaseSha256+'","wasm":')
+  ];
+  for(const malformed of bad){
+   assert.notEqual(malformed,good);
+   await writeFile(sealPath,malformed);
+   await assert.rejects(readAtomicRelease(w.output),/noncanonical release seal/);
+  }
+  await writeFile(sealPath,good);
+  const restored=await readAtomicRelease(w.output);
+  assert.equal(restored.releaseSha256,release.releaseSha256);
+  assert.equal(execute(restored.wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
