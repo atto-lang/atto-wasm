@@ -10,5 +10,9 @@
     "test": "node scripts/build.mjs && node --test",
     "compile:ores": "node scripts/compile-ores.mjs",
     "test:real-compiler": "node --test tests/bridge.test.mjs"
+  },
+  "devDependencies": {
+    "@typespec/compiler": "1.4.0",
+    "@typespec/json-schema": "1.4.0"
   }
 }
