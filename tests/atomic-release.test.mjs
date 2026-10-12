@@ -5,7 +5,7 @@ import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename} from "node:fs/
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
-import {publishAtomicRelease,readAtomicRelease} from "../scripts/atomic-release.mjs";
+import {publishAtomicRelease,readAtomicRelease,inspectAtomicReleaseState} from "../scripts/atomic-release.mjs";
 
 async function workspace(){
  const dir=await mkdtemp(join(tmpdir(),"oreslang-atomic-release-"));
@@ -227,5 +227,42 @@ test("an existing publication lock fails closed instead of stealing it",async()=
    /artifact publication lock unavailable/
   );
   await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+ }finally{await cleanup(w.dir)}
+});
+
+test("crash recovery reports orphaned stage without deleting it",async()=>{
+ const w=await workspace();
+ try{
+  const stage=join(w.output+".releases",".staging-abandoned");
+  await mkdir(stage,{recursive:true});
+  await writeFile(join(stage,"guest.wasm"),"incomplete");
+  const report=await inspectAtomicReleaseState(w.output);
+  assert.equal(report.current,null);
+  assert.deepEqual(report.staging,[".staging-abandoned"]);
+  assert.deepEqual(report.unreferenced,[]);
+  assert.equal((await readFile(join(stage,"guest.wasm"),"utf8")),"incomplete");
+  const release=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const next=await inspectAtomicReleaseState(w.output);
+  assert.equal(next.current,release.releaseSha256);
+  assert.deepEqual(next.staging,[".staging-abandoned"]);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("recovery retains previous valid releases while pointer selects new one",async()=>{
+ const w=await workspace();
+ try{
+  const first=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const changed=join(w.dir,"changed.ores");
+  await writeFile(changed,"pub fnc main(): int { return 41 + 1; }\n");
+  const second=await compileOresToWasm({...w,source:changed,environment:"browser",publication:"atomic"});
+  const report=await inspectAtomicReleaseState(w.output);
+  assert.equal(report.current,second.releaseSha256);
+  assert.deepEqual(report.unreferenced,[first.releaseSha256]);
+  assert.deepEqual(report.invalid,[]);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+  const releaseNames=await readdir(w.output+".releases");
+  assert.ok(releaseNames.includes(first.releaseSha256));
+  assert.ok(releaseNames.includes(second.releaseSha256));
  }finally{await cleanup(w.dir)}
 });
