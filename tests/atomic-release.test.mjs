@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
 import {spawnSync} from "node:child_process";
-import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename} from "node:fs/promises";
+import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename,symlink,unlink} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
@@ -577,5 +577,22 @@ test("Unicode string bounds follow JSON Schema code-point counts",async()=>{
    }),/invalid producer record/);
    assert.deepEqual(await readFile(w.output+".current.json"),pointer);
   }
+ }finally{await cleanup(w.dir)}
+});
+
+test("verified release reader disallows symlinked pointer files",async()=>{
+ const w=await workspace();
+ try{
+  const compiled=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const pointer=w.output+".current.json";
+  const backup=pointer+".saved";
+  await rename(pointer,backup);
+  await symlink(backup,pointer);
+  await assert.rejects(readAtomicRelease(w.output),/ELOOP|invalid file/);
+  await unlink(pointer);
+  await rename(backup,pointer);
+  const restored=await readAtomicRelease(w.output);
+  assert.equal(restored.releaseSha256,compiled.releaseSha256);
+  assert.equal(execute(restored.wasm),42n);
  }finally{await cleanup(w.dir)}
 });
