@@ -192,7 +192,7 @@ def main():
  }
  path=ROOT/"build/qemu-powercut-evidence.json"
  path.parent.mkdir(parents=True,exist_ok=True)
- path.write_text(json.dumps(evidence,sort_keys=True,indent=2)+"\\n")
+ path.write_text(json.dumps(evidence,sort_keys=True,indent=2)+"\n")
  print("QEMU_POWER_CUT_EVIDENCE_SHA256",sha256(path),flush=True)
  print("QEMU_POWER_CUT_MATRIX_PASS",len(CHECKPOINTS),flush=True)
 
