@@ -10,6 +10,13 @@ const HEADER=44, LIMIT=1048576, DEPTH=12, ITEMS=4096;
 const SCHEMA_NODES=4096, SCHEMA_BYTES=65536;
 const magic=Uint8Array.of(79,82,77,49);
 const enc=new TextEncoder(),dec=new TextDecoder("utf-8",{fatal:true});
+// Capture text intrinsics at module admission. Mutable String/TextEncoder and
+// TextDecoder prototype methods must not weaken UTF-8 budgets or wire bytes.
+const readCodeUnit=String.prototype.charCodeAt;
+const nativeEncode=TextEncoder.prototype.encode;
+const nativeDecode=TextDecoder.prototype.decode;
+const encodeUTF8=s=>nativeEncode.call(enc,s);
+const decodeUTF8=b=>nativeDecode.call(dec,b);
 // Primitive type admission uses literal comparisons, never mutable Set.prototype.has.
 const safeDescriptor=Object.getOwnPropertyDescriptor;
 const safePrototype=Object.getPrototypeOf;
@@ -172,13 +179,13 @@ function contract(c){
  unique(safeMap(vs,v=>v.id),"variant ID");unique(safeMap(vs,v=>v.name),"variant name");
  const normalized={schemaVersion:1,ownership:"copy",variants:safeSort(vs,(a,b)=>a.id-b.id)};
  // Reject large contracts before WebCrypto hashes attacker-sized JSON.
- if(enc.encode(normalizedJSON(normalized)).length>SCHEMA_BYTES)fail("schema byte budget exceeded");
+ if(encodeUTF8(normalizedJSON(normalized)).length>SCHEMA_BYTES)fail("schema byte budget exceeded");
  return normalized;
 }
 async function digest(c){
  if(!globalThis.crypto?.subtle)fail("WebCrypto SHA-256 required");
  return new Uint8Array(await crypto.subtle.digest("SHA-256",
-  enc.encode("Oreslang owned-message contract v1\n"+normalizedJSON(c))));
+  encodeUTF8("Oreslang owned-message contract v1\n"+normalizedJSON(c))));
 }
 function stringBytes(s,remaining){
  if(typeof s!=="string")fail("expected string");
@@ -186,15 +193,15 @@ function stringBytes(s,remaining){
  // hostile multi-megabyte string must not bypass a small envelope byte budget.
  let bytes=0;
  for(let i=0;i<s.length;i++){
-  const n=s.charCodeAt(i);
+  const n=readCodeUnit.call(s,i);
   if(n>=0xd800&&n<=0xdbff){
-   if(++i>=s.length||s.charCodeAt(i)<0xdc00||s.charCodeAt(i)>0xdfff)fail("unpaired surrogate");
+   if(++i>=s.length||readCodeUnit.call(s,i)<0xdc00||readCodeUnit.call(s,i)>0xdfff)fail("unpaired surrogate");
    bytes+=4;
   }else if(n>=0xdc00&&n<=0xdfff)fail("unpaired surrogate");
   else bytes+=n<0x80?1:n<0x800?2:3;
   if(bytes>remaining)fail("byte budget exceeded");
  }
- return enc.encode(s);
+ return encodeUTF8(s);
 }
 class Writer{
  constructor(limit){this.parts=[];this.size=0;this.limit=limit;this.visits=0;}
@@ -259,7 +266,7 @@ function decode(r,t,d=0){
  if(t==="bool"){const x=r.u8();if(x>1)fail("noncanonical bool");return !!x;}
  if(t==="string"||t==="bytes"){const b=r.take(r.u32());
   if(t==="bytes"){const owned=new Uint8Array(b.byteLength);safeSet.call(owned,b);return owned;}
-  try{return dec.decode(b);}catch{fail("invalid UTF-8");}}
+  try{return decodeUTF8(b);}catch{fail("invalid UTF-8");}}
  if(safeHasOwn(t,"tuple"))return Object.freeze(safeMap(t.tuple,a=>decode(r,a,d+1)));
  if(safeHasOwn(t,"array")||safeHasOwn(t,"list")){
   const fixed=safeHasOwn(t,"array"),spec=fixed?t.array:t.list,n=fixed?spec.length:r.u32();
