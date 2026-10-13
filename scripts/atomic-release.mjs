@@ -22,7 +22,11 @@ const intrinsicBufferFrom=Buffer.from;
 const intrinsicBufferAllocUnsafe=Buffer.allocUnsafe;
 const intrinsicBufferSubarray=Buffer.prototype.subarray;
 const intrinsicBufferEquals=Buffer.prototype.equals;
-const intrinsicBufferToString=Buffer.prototype.toString;
+const intrinsicTextDecoder=TextDecoder;
+const intrinsicDecode=TextDecoder.prototype.decode;
+const intrinsicJSONParse=JSON.parse;
+const parseUTF8JSON=bytes=>intrinsicJSONParse(intrinsicApply(intrinsicDecode,
+ new intrinsicTextDecoder("utf-8",{fatal:true}),[bytes]));
 const intrinsicUint8Array=Uint8Array;
 const intrinsicTypedArraySet=Uint8Array.prototype.set;
 const intrinsicRegExpExec=RegExp.prototype.exec;
@@ -187,7 +191,7 @@ async function safeFile(path,limit){
 // field reordering and invalid UTF-8 that other runtimes may parse differently.
 function parseCanonicalSeal(bytes){
  let seal;
- try{seal=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes))}
+ try{seal=parseUTF8JSON(bytes)}
  catch{fail("invalid release seal JSON")}
  if(!seal||typeof seal!=="object"||nativeIsArray(seal)||
     !intrinsicApply(intrinsicBufferEquals,bytes,[canonical(seal)])||
@@ -289,8 +293,8 @@ async function verifyDir(dir,id){
     (manifestBytes&&digest(manifestBytes)!==seal.fileHashes.manifest))
    fail("release content mutated");
  let manifest,provenance;
- try{provenance=JSON.parse(provenanceBytes);
-     manifest=manifestBytes?JSON.parse(manifestBytes):null}
+ try{provenance=parseUTF8JSON(provenanceBytes);
+     manifest=manifestBytes?parseUTF8JSON(manifestBytes):null}
  catch{fail("invalid release metadata")}
  const computed=descriptorFor(wasm,manifest,provenance);
  if(computed.releaseSha256!==id)fail("release metadata mismatch");
@@ -302,7 +306,7 @@ export async function readAtomicRelease(output){
  if(!st.isDirectory()||st.isSymbolicLink())fail("invalid release root");
  const pointerBytes=await safeFile(pointer,16384);
  let p;
- try{p=JSON.parse(intrinsicApply(intrinsicBufferToString,pointerBytes,["utf8"]))}
+ try{p=parseUTF8JSON(pointerBytes)}
  catch{fail("invalid current pointer JSON")}
  // Publisher emits a single canonical encoding. Reject duplicate JSON keys,
  // reordered fields or alternate encodings instead of trusting last-key-wins.
