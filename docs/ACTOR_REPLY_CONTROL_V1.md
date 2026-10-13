@@ -8,13 +8,18 @@ accept every Oreslang example below.
 
 ## Two separate result channels
 
-A callable return is not a message reply.
+A callable return is not a message reply. **The preferred form inside
+`receive()` is `do match`**, because the handler dispatches messages for
+side effects rather than computing a match expression value. Plain `match`
+is value-producing and belongs where its result is consumed (for example,
+`return match`). This is a style/canonical-form distinction, not a license
+to reinterpret a discarded match value as a reply.
 
 ```oreslang
 define actor WorkerActor as
   @Implements
   receive(Message m): void {
-    match m over {
+    do match m over {
       on Message.Compute as (text, n) {
         self.respond(Message.Result(text, n + 1));
         self.done();
@@ -53,6 +58,11 @@ fnc result_do(Message m): Message {
   }
 }
 ```
+
+In the procedural `do match` form, the `return` exits the enclosing callable;
+its value is unrelated to the actor reply channel. In the preferred
+`receive(...): void` form, arms use `self.respond()` / `self.forward()`
+and `self.done()`, **not** a value-return statement.
 
 These are ordinary callable-return values. They MUST NOT invoke the actor reply
 channel as a side effect. A `receive(...): void` method MUST NOT return a
