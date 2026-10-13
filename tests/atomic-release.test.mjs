@@ -1061,3 +1061,49 @@ test("legacy metadata sidecars do not invoke inherited toJSON",async()=>{
   await cleanup(w.dir);
  }
 });
+
+
+test("frozen original publication failure is not replaced by cleanup annotation",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const release=await readAtomicRelease(w.output);
+  const pointer=await readFile(w.output+".current.json");
+  const frozen=Object.freeze(new Error("frozen pre-commit failure"));
+  await assert.rejects(publishAtomicRelease({
+   output:w.output,wasm:release.wasm,manifest:release.manifest,
+   provenance:{...release.provenance,note:"frozen-cleanup-primary"},
+   __testBeforePointerRename:()=>{throw frozen},
+   __testBeforeCleanup:()=>{throw Error("secondary cleanup fault")}
+  }),error=>error===frozen);
+  assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("compiler scratch cleanup cannot mask a failure through inherited receipt setters",async()=>{
+ const w=await workspace();
+ const descriptor=Object.getOwnPropertyDescriptor(Object.prototype,"cleanupFailures");
+ const broken=join(w.dir,"fails.sh");
+ let setterCalls=0;
+ try{
+  await writeFile(broken,"#!/bin/sh\nexit 72\n",{mode:0o700});
+  try{
+   Object.defineProperty(Object.prototype,"cleanupFailures",{configurable:true,
+    set(){setterCalls++;throw Error("poisoned cleanupFailures setter")}});
+   await assert.rejects(compileOresToWasm({
+    ...w,compiler:broken,publication:"atomic",environment:"browser",
+    __testAfterScratchCleanup:()=>{throw Error("secondary scratch cleanup failure")}
+   }),/command failed/);
+  }finally{
+   if(descriptor)Object.defineProperty(Object.prototype,"cleanupFailures",descriptor);
+   else delete Object.prototype.cleanupFailures;
+  }
+  assert.equal(setterCalls,0);
+  await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+ }finally{
+  if(descriptor)Object.defineProperty(Object.prototype,"cleanupFailures",descriptor);
+  else delete Object.prototype.cleanupFailures;
+  await cleanup(w.dir);
+ }
+});
