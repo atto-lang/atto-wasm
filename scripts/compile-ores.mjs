@@ -13,6 +13,8 @@ import {inspectWasmBytes} from "./inspect-core-memory.mjs";
 import {publishAtomicRelease} from "./atomic-release.mjs";
 import {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
+// Hold the own-property predicate used by cleanup receipts despite pollution.
+const nativeHasOwn=Object.hasOwn;
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
 const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES=16*1024*1024;
 function rejectStartSection(bytes){
@@ -96,7 +98,7 @@ function attachCleanupWarning(result,scope,cleanupError){
    });
   }
   appendReceipt(list,warning);
-  if(!Object.hasOwn(result,"cleanupWarning"))
+  if(!nativeHasOwn(result,"cleanupWarning"))
    Object.defineProperty(result,"cleanupWarning",{
     value:warning,writable:true,configurable:true,enumerable:true
    });
