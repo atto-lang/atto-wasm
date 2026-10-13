@@ -4,6 +4,7 @@ import {mkdtemp,writeFile,chmod,readFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createHash} from "node:crypto";
+import {spawnSync} from "node:child_process";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
 const hash=b=>createHash("sha256").update(b).digest("hex");
 test("real Clang wasm32 bridge accepts verified IR and records hashes (stub compiler only)",async()=>{
@@ -39,5 +40,50 @@ test("real native Oreslang compiler integration, opt-in and never simulated",{
   assert.equal(r.importCount,0);
   const bytes=await readFile(output);
   assert.equal((new WebAssembly.Instance(new WebAssembly.Module(bytes))).exports.main(),42n);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
+
+test("compiler bridge resists poisoned native SHA-256 prototype methods",{timeout:45000},async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"oreslang-sha-bridge-"));
+ try{
+  const compiler=join(dir,"compiler.sh"),source=join(dir,"main.ores");
+  const output=join(dir,"guest.wasm");
+  await writeFile(compiler,
+   "#!/bin/sh\\nprintf 'target triple = \\\"wasm32-unknown-unknown\\\"\\\\ndefine i64 @main() { ret i64 42 }\\\\n'\\n",
+   {mode:0o700});
+  await chmod(compiler,0o700);
+  await writeFile(source,"pub fnc main(): int { return 42; }\\n");
+  const pin=hash(await readFile(compiler));
+  const bridgeURL=new URL("../scripts/compile-ores.mjs",import.meta.url).href;
+  const childSource=[
+   "import {compileOresToWasm} from "+JSON.stringify(bridgeURL)+";",
+   "import {createHash} from 'node:crypto';",
+   "const hashProto=Object.getPrototypeOf(createHash('sha256'));",
+   "const originalUpdate=Object.getOwnPropertyDescriptor(hashProto,'update');",
+   "const originalDigest=Object.getOwnPropertyDescriptor(hashProto,'digest');",
+   "let callbacks=0,result;",
+   "try{",
+   " Object.defineProperty(hashProto,'update',{configurable:true,writable:true,",
+   "  value(){callbacks++;return this}});",
+   " Object.defineProperty(hashProto,'digest',{configurable:true,writable:true,",
+   "  value(){callbacks++;return 'f'.repeat(64)}});",
+   " result=await compileOresToWasm({compiler:"+JSON.stringify(compiler)+",",
+   "  source:"+JSON.stringify(source)+",output:"+JSON.stringify(output)+",",
+   "  compilerSha256:"+JSON.stringify(pin)+",publication:'atomic',environment:'browser'});",
+   "}finally{",
+   " Object.defineProperty(hashProto,'update',originalUpdate);",
+   " Object.defineProperty(hashProto,'digest',originalDigest);",
+   "}",
+   "if(callbacks!==0)throw Error('poisoned bridge SHA callbacks: '+callbacks);",
+   "process.stdout.write(result.wasmSha256+'\\n');"
+  ].join("\\n");
+  const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
+   {encoding:"utf8",timeout:30000});
+  assert.equal(child.status,0,"bridge used poisoned SHA methods: "+String(child.stderr));
+  const wasm=await readFile(join(output+".releases",
+   JSON.parse(await readFile(output+".current.json","utf8")).releaseSha256,
+   "guest.wasm"));
+  assert.equal(child.stdout.trim(),hash(wasm));
+  assert.equal(WebAssembly.validate(wasm),true);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
