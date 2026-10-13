@@ -38,7 +38,7 @@ jobs:
           sudo chmod 0644 "$RUNNER_TEMP/ores-qemu-vmlinuz"
           echo "QEMU_KERNEL_SHA256=$(sha256sum "$RUNNER_TEMP/ores-qemu-vmlinuz" | cut -d' ' -f1)"
           echo "QEMU_INITRD_SHA256=$(sha256sum /boot/initrd.img-6.8.0-146-generic | cut -d' ' -f1)"
-      - name: Abruptly kill five ext4 VMs and verify each cold boot
+      - name: Verify five single-publisher and two multi-publisher abrupt VM cold boots
         shell: bash
         run: |
           set -euo pipefail
@@ -52,8 +52,9 @@ jobs:
                   '__testBeforePointerRename','__testAfterPointerRename','__testBeforeCleanup']
           tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip()
           if info.get('sourceTree')!=tree or info.get('checkpoints')!=wanted or (
-              info.get('verifiedColdBoots')!=5 or info.get('uncleanHypervisorStops')!=5):
-              raise SystemExit('QEMU evidence mismatches exact source tree or complete five-case matrix')
+              info.get('verifiedColdBoots')!=5 or info.get('uncleanHypervisorStops')!=5) or (
+              info.get('multiWriterCases')!=['multi2','multi3'] or info.get('multiWriterColdBoots')!=2):
+              raise SystemExit('QEMU evidence mismatches exact source or five single/two multi-writer cold boots')
           print('PASS_QEMU_FINAL_EVIDENCE_EXACT_TREE',tree)
           PY
           sha256sum build/qemu-powercut-evidence.json

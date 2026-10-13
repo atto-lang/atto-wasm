@@ -17,8 +17,8 @@ if(mode==="publish"&&modes.has(checkpoint)){
  const selected=await readAtomicRelease(output);
  if(selected.releaseSha256!==original.releaseSha256)throw Error("unexpected initial selected identity");
  const wasm=await readFile("/workspace/payload/artifact-43.wasm");
- const manifest=JSON.parse(await readFile("/workspace/payload/next-manifest.json","utf8"));
- const provenance=JSON.parse(await readFile("/workspace/payload/next-provenance.json","utf8"));
+ const manifest=JSON.parse(await readFile("/workspace/payload/next-manifest-43.json","utf8"));
+ const provenance=JSON.parse(await readFile("/workspace/payload/next-provenance-43.json","utf8"));
  await publishAtomicRelease({output,wasm,manifest,provenance,
   [checkpoint]:async()=>{
    process.stdout.write("GUEST_POWER_CUT_BOUNDARY "+checkpoint+"\n");
