@@ -201,10 +201,10 @@ class Writer{
   const view=checkedView(b);
   if(view.byteLength>this.limit-this.size)fail("byte budget exceeded");
   const copy=new Uint8Array(view.byteLength);
-  Uint8Array.prototype.set.call(copy,view);
+  safeSet.call(copy,view);
   this.parts[this.parts.length]=copy;this.size+=copy.byteLength;
  }
- u8(n){this.put(Uint8Array.of(n));}
+ u8(n){const b=new Uint8Array(1);b[0]=n;this.put(b);}
  u16(n){const b=new Uint8Array(2);new DataView(b.buffer).setUint16(0,n,true);this.put(b);}
  u32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,true);this.put(b);}
  i64(n){if(typeof n!=="bigint"||n<-(1n<<63n)||n>(1n<<63n)-1n)fail("signed i64 BigInt required");
@@ -256,7 +256,7 @@ function decode(r,t,d=0){
  if(t==="i64")return r.i64();
  if(t==="bool"){const x=r.u8();if(x>1)fail("noncanonical bool");return !!x;}
  if(t==="string"||t==="bytes"){const b=r.take(r.u32());
-  if(t==="bytes")return Uint8Array.from(b);
+  if(t==="bytes"){const owned=new Uint8Array(b.byteLength);safeSet.call(owned,b);return owned;}
   try{return dec.decode(b);}catch{fail("invalid UTF-8");}}
  if(safeHasOwn(t,"tuple"))return Object.freeze(safeMap(t.tuple,a=>decode(r,a,d+1)));
  if(safeHasOwn(t,"array")||safeHasOwn(t,"list")){
@@ -291,7 +291,7 @@ function snapshot(input,maxBytes){
  if(length<HEADER||length>maxBytes)fail("invalid message size");
  const src=new Uint8Array(buffer,offset,length);
  const result=new Uint8Array(src.byteLength);
- Uint8Array.prototype.set.call(result,src);
+ safeSet.call(result,src);
  return result;
 }
 function budget(n){if(!Number.isSafeInteger(n)||n<HEADER||n>LIMIT)fail("invalid maxBytes");}
