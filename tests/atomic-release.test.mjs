@@ -1491,3 +1491,56 @@ test("sealed release read ignores post-import poisoned Buffer factory and method
   assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
  }finally{await cleanup(w.dir)}
 });
+
+test("native Wasm snapshot ignores inherited typed-array length traps",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const prior=await readAtomicRelease(w.output);
+  const oldLength=Object.getOwnPropertyDescriptor(Uint8Array.prototype,"length");
+  const oldFrom=Object.getOwnPropertyDescriptor(Buffer,"from");
+  const typedArrayProto=Object.getPrototypeOf(Uint8Array.prototype);
+  const rawLength=Object.getOwnPropertyDescriptor(typedArrayProto,"length").get;
+  const rawBuffer=Object.getOwnPropertyDescriptor(typedArrayProto,"buffer").get;
+  const apply=Reflect.apply;
+  let aliasLengthReads=0,fromCalls=0,publication;
+  const callerBacking=apply(rawBuffer,prior.wasm,[]);
+  try{
+   Object.defineProperty(Uint8Array.prototype,"length",{
+    configurable:true,get(){
+     // Buffer.from(view) would consult length on its newly created native
+     // Uint8Array alias of the original backing. Return forged zero only for
+     // that alias; other Wasm-validation views retain their native length.
+     const n=apply(rawLength,this,[]);
+     if(!Buffer.isBuffer(this)&&apply(rawBuffer,this,[])===callerBacking){
+      aliasLengthReads++;
+      return 0;
+     }
+     return n;
+    }
+   });
+   Object.defineProperty(Buffer,"from",{
+    configurable:true,writable:true,value(){
+     fromCalls++;
+     throw Error("mutable Buffer.from invoked during publication");
+    }
+   });
+   // The publisher takes its untrusted Wasm snapshot synchronously before
+   // the first await. Restore globals before Node IO or test machinery runs.
+   publication=publishAtomicRelease({output:w.output,wasm:prior.wasm,
+    manifest:prior.manifest,
+    provenance:{...prior.provenance,note:"poisoned byte-view length must not forge Wasm"}});
+  }finally{
+   if(oldLength)Object.defineProperty(Uint8Array.prototype,"length",oldLength);
+   else delete Uint8Array.prototype.length;
+   if(oldFrom)Object.defineProperty(Buffer,"from",oldFrom);
+   else delete Buffer.from;
+  }
+  const result=await publication;
+  assert.equal(fromCalls,0,"captured native allocation cannot call overwritten Buffer.from");
+  assert.equal(aliasLengthReads,0,
+   "copy must not consult inherited length on untrusted-backing native view");
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,result.releaseSha256);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
