@@ -123,3 +123,49 @@ and cold-boot counts. The CI artifact is retained for 30 days.
 
 Keep atomic publication opt-in and automatic release garbage collection
 disabled until separate reader-pin safety and governance gates are met.
+
+## Experimental two-/three-publisher crash matrix
+
+`.github/workflows/qemu-multiwriter.yml` checks two scenarios against new
+disposable, ext4-backed QEMU guests. The real JavaScript atomic publication
+API is invoked by distinct *concurrent operations inside the same guest
+process*; this does not yet establish independent-process or networked-host
+multi-writer safety.
+
+The tests first publish a verified baseline i64 42 release, and compile
+additional canonical sealed releases i64 43, 44 and 45. Synchronization hooks
+force two or three overlapping publishers to reach the genuine
+post-release-fsync, pre-pointer-rename boundary before the first publisher
+is permitted to finish a durable i64 43 pointer commit.
+
+In `multi2`, publisher 44 remains paused before pointer rename while the
+first publisher commits 43; the hypervisor is killed at that boundary.
+Cold boot must find the exact committed i64 43 release and a complete,
+unreferenced 44 release. In `multi3`, publisher 44 is still paused, and
+publisher 45 has renamed the pointer but has not confirmed its directory
+fsync. Abrupt hypervisor termination followed by cold boot must recover
+either the exact, fully committed 43 or the exact, complete 45 release.
+It must never expose 42, the incomplete publisher 44, or an unrecognized
+artifact. Each guest executes its recovered Wasm and hashes its source
+artifact and canonical seal identity.
+
+The two-writer and three-writer cases are bounded deterministic schedules,
+not a proof of all possible publisher interleavings. The single-publisher
+five-checkpoint matrix still runs independently.
+
+## Reader-safe retirement safety model (no runtime GC)
+
+`formal/AtomicReaderRetention.tla` models pin acquisition as one atomic
+admission action synchronized with retirement, marks identities retired
+before reclamation, requires all persistent reader pins to drain, and
+conservatively retains pins across crashes/recovery. TLC checks three
+possible releases and two readers, plus a mandatory unsafe reclamation
+negative control which must violate `PinnedPresent`.
+
+This establishes safety of the **specified bounded state machine** only.
+There is no runtime persistent pin store, owner-fencing mechanism, or
+automatic collector in this PR. A runtime implementation needs authenticated
+reader identity, durable pin grant and release, crash recovery, ownership
+fencing, atomic admission relative to retirement, and adversarial tests.
+Do not infer a working garbage collector from the model. Leave automatic
+release GC disabled and retain orphan releases until separately qualified.
