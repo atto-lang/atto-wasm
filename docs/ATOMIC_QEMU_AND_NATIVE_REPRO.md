@@ -44,7 +44,7 @@ unlike host environments.
 
 `.github/workflows/qemu-powercut.yml` runs on Ubuntu 24.04 with
 an exact-version allowlist for the Ubuntu 24.04 GA guest kernel (`linux-image-virtual`
-versions `6.8.0-146.146` or `6.8.0-139.139`, in preference order).
+versions `6.8.0-147.147`, `6.8.0-146.146` or `6.8.0-139.139`, in preference order).
 It fails closed when neither reviewed version is available; it never silently
 upgrades to an unreviewed kernel or substitutes the runner host kernel.
 The workflow verifies the installed `dpkg` package version and logs the guest
@@ -118,7 +118,7 @@ and cold-boot counts. The CI artifact is retained for 30 days.
   cross-filesystem rename, or automatic reader-aware garbage collection.
 - The QEMU guest kernel is exact-version allowlisted, rather than fixed to a
   single apt version that may disappear from mutable Ubuntu mirrors. The
-  successful version is selected only from the two reviewed GA-kernel builds,
+  successful version is selected only from the three reviewed GA-kernel builds,
   checked after installation, and logged; any other available version rejects
   admission. This is **not** immutable package-byte pinning. The generated
   initramfs can vary with host image contents, so both kernel and initramfs
