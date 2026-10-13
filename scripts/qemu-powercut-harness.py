@@ -186,8 +186,12 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
    except subprocess.TimeoutExpired as error:
     raise RuntimeError("cold-boot recovery guest did not power off cleanly") from error
    output=(output+tail)[-MAX_LOG:]
-   receipt=validate_cold_boot_receipt(
-     output.decode(errors="replace"),checkpoint,process.returncode)
+   try:
+    receipt=validate_cold_boot_receipt(
+      output.decode(errors="replace"),checkpoint,process.returncode)
+   except RuntimeError as error:
+    raise RuntimeError(str(error)+
+       "; guest serial tail:\\n"+output.decode(errors="replace")[-8000:]) from error
    print("QEMU_VALIDATED_GUEST_RECEIPT",receipt,flush=True)
   print(("QEMU_UNCLEAN_POWER_CUT" if mode.startswith("publish") else
          "QEMU_COLD_BOOT_RECOVERY_VERIFIED"),checkpoint,flush=True)
