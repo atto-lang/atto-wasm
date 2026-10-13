@@ -731,9 +731,27 @@ test("publisher snapshots native typed-array storage without subclass getter aut
    output:w.output,wasm:counterfeit,provenance:original.provenance,
    manifest:original.manifest
   }),/invalid Wasm bytes/);
+  // instanceof follows caller-mutable prototypes, not native element slots.
+  const wrongElementType=new Uint16Array(8);
+  Object.setPrototypeOf(wrongElementType,Uint8Array.prototype);
+  assert.equal(wrongElementType instanceof Uint8Array,true);
+  await assert.rejects(publishAtomicRelease({
+   output:w.output,wasm:wrongElementType,provenance:original.provenance,
+   manifest:original.manifest
+  }),/invalid Wasm bytes/);
+
   if(typeof SharedArrayBuffer!=="undefined"){
-   const shared=new Uint8Array(new SharedArrayBuffer(original.wasm.byteLength));
+   const sharedBacking=new SharedArrayBuffer(original.wasm.byteLength);
+   const shared=new Uint8Array(sharedBacking);
    shared.set(original.wasm);
+   await assert.rejects(publishAtomicRelease({
+    output:w.output,wasm:shared,provenance:original.provenance,
+    manifest:original.manifest
+   }),/invalid Wasm bytes/);
+   // The caller can mask a real SharedArrayBuffer's prototype: instanceof
+   // says "false", but native slot inspection must still reject it.
+   Object.setPrototypeOf(sharedBacking,ArrayBuffer.prototype);
+   assert.equal(sharedBacking instanceof SharedArrayBuffer,false);
    await assert.rejects(publishAtomicRelease({
     output:w.output,wasm:shared,provenance:original.provenance,
     manifest:original.manifest
