@@ -3,7 +3,7 @@
  * trust boundary. Immutable means nonoverwriting via this API, not WORM media.
  */
 import {createHash} from "node:crypto";
-import {isProxy} from "node:util/types";
+import {isProxy,isUint8Array,isSharedArrayBuffer} from "node:util/types";
 import {constants as fsConstants} from "node:fs";
 import {rename,rm,mkdir,mkdtemp,lstat,chmod,open,readdir} from "node:fs/promises";
 import {join,dirname,resolve} from "node:path";
@@ -35,8 +35,10 @@ function ownedWasmSnapshot(wasm){
   offset=nativeOffset.call(wasm);
   length=nativeLength.call(wasm);
  }catch{fail("invalid Wasm bytes")}
- if(!(wasm instanceof Uint8Array)||
-    (typeof SharedArrayBuffer!=="undefined"&&backing instanceof SharedArrayBuffer))
+ // Native brand checks cannot be evaded by swapping a view/backing prototype.
+ // `instanceof` is insufficient: a Uint16Array can masquerade as Uint8Array,
+ // and SharedArrayBuffer can masquerade as ArrayBuffer.
+ if(!isUint8Array(wasm)||isSharedArrayBuffer(backing))
   fail("invalid Wasm bytes");
  if(length<8||length>16777216)fail("Wasm budget");
  // Newly constructed intrinsic view has no caller-controlled prototype
