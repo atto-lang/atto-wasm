@@ -19,6 +19,8 @@ const encodeUTF8=s=>nativeEncode.call(enc,s);
 const decodeUTF8=b=>nativeDecode.call(dec,b);
 // Primitive type admission uses literal comparisons, never mutable Set.prototype.has.
 const safeDescriptor=Object.getOwnPropertyDescriptor;
+const safeDefine=Object.defineProperty;
+const safeFreeze=Object.freeze;
 const safePrototype=Object.getPrototypeOf;
 const safeHasOwn=Object.hasOwn;
 const safeKeys=Object.keys;
@@ -267,14 +269,14 @@ function decode(r,t,d=0){
  if(t==="string"||t==="bytes"){const b=r.take(r.u32());
   if(t==="bytes"){const owned=new Uint8Array(b.byteLength);safeSet.call(owned,b);return owned;}
   try{return decodeUTF8(b);}catch{fail("invalid UTF-8");}}
- if(safeHasOwn(t,"tuple"))return Object.freeze(safeMap(t.tuple,a=>decode(r,a,d+1)));
+ if(safeHasOwn(t,"tuple"))return safeFreeze(safeMap(t.tuple,a=>decode(r,a,d+1)));
  if(safeHasOwn(t,"array")||safeHasOwn(t,"list")){
   const fixed=safeHasOwn(t,"array"),spec=fixed?t.array:t.list,n=fixed?spec.length:r.u32();
   if(n>ITEMS||(!fixed&&n>spec.maxLength))fail("array/list length");
-  const a=[];for(let i=0;i<n;i++)a[i]=decode(r,spec.element,d+1);return Object.freeze(a);
+  const a=[];for(let i=0;i<n;i++)a[i]=decode(r,spec.element,d+1);return safeFreeze(a);
  }
  const variantId=r.u16();const v=safeFind(t.enum,a=>a.id===variantId);if(!v)fail("unknown enum ID");
- return Object.freeze({variant:v.name,value:v.payload===null?null:decode(r,v.payload,d+1)});
+ return safeFreeze({variant:v.name,value:v.payload===null?null:decode(r,v.payload,d+1)});
 }
 function snapshot(input,maxBytes){
  let buffer,offset=0,length;
@@ -330,9 +332,9 @@ export async function decodeMessage(schema,input,{maxBytes=LIMIT}={}){
   const value=decode(r,f.type);
   // Define an OWN property, including for "__proto__", without calling
   // Object.prototype setters or replacing the resulting object prototype.
-  Object.defineProperty(fields,f.name,{value,enumerable:true,writable:false,configurable:false});
+  safeDefine(fields,f.name,{value,enumerable:true,writable:false,configurable:false});
  }
  if(r.at!==bytes.length)fail("unexpected trailing payload");
- return Object.freeze({variant:v.name,fields:Object.freeze(fields)});
+ return safeFreeze({variant:v.name,fields:safeFreeze(fields)});
 }
-export const OWNED_ENVELOPE_V1=Object.freeze({version:1,headerBytes:HEADER,maxBytes:LIMIT,ownership:"copy"});
+export const OWNED_ENVELOPE_V1=safeFreeze({version:1,headerBytes:HEADER,maxBytes:LIMIT,ownership:"copy"});
