@@ -30,10 +30,20 @@ function boundedCodePoints(value,min,max){
  return n>=min;
 }
 const fail=x=>{throw Error("invalid atomic Oreslang release: "+x)};
-const arrayViewProto=Object.getPrototypeOf(Uint8Array.prototype);
-const nativeBuffer=Object.getOwnPropertyDescriptor(arrayViewProto,"buffer").get;
-const nativeOffset=Object.getOwnPropertyDescriptor(arrayViewProto,"byteOffset").get;
-const nativeLength=Object.getOwnPropertyDescriptor(arrayViewProto,"byteLength").get;
+// Capture descriptor and primitive admission intrinsics before any post-import
+// prototype pollution. A poisoned Object.hasOwn could otherwise make an
+// accessor descriptor look like a data descriptor and run a caller getter.
+const nativeHasOwn=Object.hasOwn;
+const nativeOwnKeys=Reflect.ownKeys;
+const nativeGetOwnPropertyDescriptor=Object.getOwnPropertyDescriptor;
+const nativeGetPrototypeOf=Object.getPrototypeOf;
+const nativeObjectKeys=Object.keys;
+const nativeIsArray=Array.isArray;
+const nativeIsSafeInteger=Number.isSafeInteger;
+const arrayViewProto=nativeGetPrototypeOf(Uint8Array.prototype);
+const nativeBuffer=nativeGetOwnPropertyDescriptor(arrayViewProto,"buffer").get;
+const nativeOffset=nativeGetOwnPropertyDescriptor(arrayViewProto,"byteOffset").get;
+const nativeLength=nativeGetOwnPropertyDescriptor(arrayViewProto,"byteLength").get;
 // Never ask an untrusted typed-array subclass for .length, .buffer or
 // Symbol.iterator. Buffer.from(view) consults subclass .length and can copy a
 // different number of bytes than the native Uint8Array backing view.
@@ -78,9 +88,9 @@ const canonical=canonicalReleaseMetadata;
 // Array.length alone does not make an empty metadata array a closed record:
 // an own toJSON, symbol, non-enumerable capability or accessor would otherwise
 // be silently admitted and might be invoked by future code paths.
-const exactEmptyArray=value=>Array.isArray(value)&&!isProxy(value)&&
- Object.getPrototypeOf(value)===Array.prototype&&value.length===0&&
- Reflect.ownKeys(value).length===1&&Reflect.ownKeys(value)[0]==="length";
+const exactEmptyArray=value=>nativeIsArray(value)&&!isProxy(value)&&
+ nativeGetPrototypeOf(value)===Array.prototype&&value.length===0&&
+ nativeOwnKeys(value).length===1&&nativeOwnKeys(value)[0]==="length";
 
 // Keep runtime admission aligned with atomic-release-v1.schema.json, which
 // specifies closed records. Digest equality is not a schema/authority check.
@@ -90,20 +100,20 @@ const exactEmptyArray=value=>Array.isArray(value)&&!isProxy(value)&&
 // serialization, producing inconsistent source-of-authority records.
 // Explicit loops avoid prototype-pollutable Array algorithms in admission.
 function exactKeys(value,keys){
- if(value===null||typeof value!=="object"||isProxy(value)||Array.isArray(value))
+ if(value===null||typeof value!=="object"||isProxy(value)||nativeIsArray(value))
   return false;
- const prototype=Object.getPrototypeOf(value);
+ const prototype=nativeGetPrototypeOf(value);
  if(prototype!==Object.prototype&&prototype!==null)return false;
- if(Reflect.ownKeys(value).length!==keys.length)return false;
+ if(nativeOwnKeys(value).length!==keys.length)return false;
  for(let i=0;i<keys.length;i++){
-  const descriptor=Object.getOwnPropertyDescriptor(value,keys[i]);
+  const descriptor=nativeGetOwnPropertyDescriptor(value,keys[i]);
   if(!descriptor||descriptor.enumerable!==true||
-     !Object.hasOwn(descriptor,"value"))return false;
+     !nativeHasOwn(descriptor,"value"))return false;
  }
  return true;
 }
 function orderedKeys(value,keys){
- const actual=Object.keys(value);
+ const actual=nativeObjectKeys(value);
  if(actual.length!==keys.length)return false;
  for(let i=0;i<keys.length;i++)if(actual[i]!==keys[i])return false;
  return true;
@@ -151,11 +161,11 @@ function parseCanonicalSeal(bytes){
  let seal;
  try{seal=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes))}
  catch{fail("invalid release seal JSON")}
- if(!seal||typeof seal!=="object"||Array.isArray(seal)||
+ if(!seal||typeof seal!=="object"||nativeIsArray(seal)||
     !bytes.equals(canonical(seal))||
     !orderedKeys(seal,["schemaVersion","type","fileHashes"])||
     !seal.fileHashes||typeof seal.fileHashes!=="object"||
-    Array.isArray(seal.fileHashes)||
+    nativeIsArray(seal.fileHashes)||
     !orderedKeys(seal.fileHashes,["wasm","manifest","provenance"]))
    fail("noncanonical release seal");
  return seal;
@@ -170,7 +180,7 @@ function descriptorFor(wasm,manifest,provenance){
     provenance.schemaVersion!==1||
     !hex(provenance.compilerSha256)||!hex(provenance.sourceSha256)||
     !hex(provenance.llvmIrSha256)||!hex(provenance.wasmSha256)||
-    !Number.isSafeInteger(provenance.wasmBytes)||provenance.wasmBytes!==wasm.length||
+    !nativeIsSafeInteger(provenance.wasmBytes)||provenance.wasmBytes!==wasm.length||
     typeof provenance.exportName!=="string"||
     !/^[A-Za-z_][A-Za-z0-9_]*$/.test(provenance.exportName)||
     provenance.importCount!==0||
@@ -249,7 +259,7 @@ export async function readAtomicRelease(output){
  catch{fail("invalid current pointer JSON")}
  // Publisher emits a single canonical encoding. Reject duplicate JSON keys,
  // reordered fields or alternate encodings instead of trusting last-key-wins.
- if(!p||typeof p!=="object"||Array.isArray(p)||
+ if(!p||typeof p!=="object"||nativeIsArray(p)||
     !orderedKeys(p,["schemaVersion","releaseSha256"])||
     !pointerBytes.equals(canonical(p)))fail("noncanonical current pointer");
  if(p.schemaVersion!==1||!hex(p.releaseSha256))
