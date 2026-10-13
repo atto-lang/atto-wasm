@@ -7,6 +7,7 @@ permissions:
 jobs:
   wasm:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Verify pristine Git checkout and record complete tree identity
@@ -23,4 +24,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends "${apt_packages[@]}"
           python3 scripts/verify-native-toolchain-lock.py verify clang lld
-      - run: npm test
+      - name: Build Wasm assets once
+        run: node scripts/build.mjs
+      - name: Run bounded Node regression files with explicit progress
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Node's default test runner can execute files concurrently, making
+          # a single stalled process indistinguishable from a passing suite.
+          # Enumerate the same .test.mjs corpus deterministically instead.
+          mapfile -d '' test_files < <(find tests -maxdepth 1 -type f -name '*.test.mjs' -print0 | sort -z)
+          if [ "${#test_files[@]}" -lt 10 ]; then
+            echo "::error::Unexpectedly incomplete Node regression inventory" >&2
+            exit 1
+          fi
+          printf 'NODE_REGRESSION_INVENTORY count=%s tree=%s\n' "${#test_files[@]}" "$(git rev-parse HEAD^{tree})"
+          for test_file in "${test_files[@]}"; do
+            printf 'NODE_REGRESSION_START %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$test_file"
+            # GNU timeout kills a deadlocked event loop or abandoned children.
+            # A nonzero exit must propagate and may never count as a skip.
+            if timeout --signal=TERM --kill-after=15s 300s \
+                node --test --test-concurrency=1 --test-reporter=tap "$test_file"; then
+              printf 'NODE_REGRESSION_PASS %s\n' "$test_file"
+            else
+              status=$?
+              printf '::error::NODE_REGRESSION_FAIL file=%s exit=%s\n' "$test_file" "$status"
+              exit "$status"
+            fi
+          done
+          echo "NODE_REGRESSION_COMPLETE all files passed"
