@@ -22,6 +22,10 @@ const intrinsicSet=Uint8Array.prototype.set;
 export function inspectWasmBytes(input,{maxModuleBytes=1048576,maxMemoryPages=32}={}){
  if(!intrinsicIsSafeInteger(maxModuleBytes)||maxModuleBytes<8||maxModuleBytes>16*1024*1024)throw new TypeError("invalid maximum module size");
  if(!intrinsicIsSafeInteger(maxMemoryPages)||maxMemoryPages<1||maxMemoryPages>256)throw new TypeError("invalid maximum memory pages");
+ // Reject before instanceof or any host-property access: a proxy may
+ // execute Symbol.hasInstance/GetPrototypeOf hooks before brand checks.
+ if(isProxy(input)||isSharedArrayBuffer(input))
+  throw new TypeError("shared or proxy-backed Wasm input cannot be snapshotted safely");
  if(input instanceof WebAssembly.Module)throw new TypeError("precompiled WebAssembly.Module cannot be inspected: provide original bytes");
  let backing,offset=0,size;
  try{
