@@ -1423,7 +1423,7 @@ test("independent processes racing as publishers and readers never select partia
   child.stderr.on("data",chunk=>{stderr+=chunk.toString("utf8")});
   await Promise.race([
    new Promise(resolve=>{
-    const checkReady=()=>{if(stdout.includes("READY\\n"))resolve();
+    const checkReady=()=>{if(stdout.includes("READY\n"))resolve();
      else child.stdout.once("data",checkReady)};
     checkReady();
    }),
@@ -1435,7 +1435,7 @@ test("independent processes racing as publishers and readers never select partia
     output:w.output,wasm:baseline.wasm,manifest:baseline.manifest,
     provenance:{...baseline.provenance,note:"parent-writer-"+i}
    });
-  child.stdin.write("GO\\n");
+  child.stdin.write("GO\n");
   await Promise.all(parents);
   for(let i=0;i<10;i++){
    const current=await readAtomicRelease(w.output);
