@@ -1424,7 +1424,9 @@ test("independent processes racing as publishers and readers never select partia
   let stdout="",stderr="";
   const done=new Promise((resolve,reject)=>{
    child.once("error",reject);
-   child.once("exit",(code,signal)=>{
+   // 'exit' can precede draining stdout/stderr; 'close' fires only after
+   // inherited pipes are closed, so PUBLISHED and failure logs are complete.
+   child.once("close",(code,signal)=>{
     if(code===0)resolve();
     else reject(Error("external release process failed: "+JSON.stringify({
      code,signal,stderr:stderr.slice(0,2000),stdout:stdout.slice(0,2000)
