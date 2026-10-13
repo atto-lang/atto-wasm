@@ -19,6 +19,17 @@ async function workspace(){
  return {dir,compiler,source,output:join(dir,"guest.wasm")};
 }
 const execute=bytes=>(new WebAssembly.Instance(new WebAssembly.Module(bytes))).exports.main();
+/** Bound test waits independently of node:test timeout. A test deadline
+ * reports failure but does not cancel open async handles or IPC children. */
+async function waitForTestBounded(label,promise,ms){
+ let timer;
+ try{
+  return await Promise.race([promise,new Promise((_,reject)=>{
+   timer=setTimeout(()=>reject(Error(label+" deadline exceeded")),ms);
+  })]);
+ }finally{clearTimeout(timer)}
+}
+
 async function cleanup(dir){
  // Test teardown is allowed to remove the root; production release readers
  // never chmod or mutate sealed content.
@@ -1143,10 +1154,10 @@ test("two publishers interleaved before pointer rename select only complete iden
    provenance:provenanceA,
    __testBeforePointerRename:async()=>{entered();await releaseBarrier}
   });
-  await Promise.race([atBarrier,a.then(
+  await waitForTestBounded("pre-rename barrier",Promise.race([atBarrier,a.then(
    ()=>{throw Error("writer A completed before its pre-rename checkpoint")},
    error=>{throw Error("writer A failed before its pre-rename checkpoint",{cause:error})}
-  )]);
+  )]),15000);
   assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256,
    "a fully installed but unselected release must remain invisible to readers");
   const b=await publishAtomicRelease({output:w.output,wasm:baseline.wasm,
@@ -1154,7 +1165,7 @@ test("two publishers interleaved before pointer rename select only complete iden
   assert.notEqual(b.releaseSha256,baseline.releaseSha256);
   assert.equal((await readAtomicRelease(w.output)).releaseSha256,b.releaseSha256);
   resumeFirst();
-  const completedA=await a;
+  const completedA=await waitForTestBounded("first publisher completion",a,25000);
   assert.notEqual(completedA.releaseSha256,b.releaseSha256);
   const selected=await readAtomicRelease(w.output);
   assert.equal(selected.releaseSha256,completedA.releaseSha256);
@@ -1188,9 +1199,9 @@ test("uncertain writer cannot claim current pointer after competing writer wins"
     throw Error("simulated uncertain pointer-parent sync")
    }
   }).then(()=>({unexpectedSuccess:true}),error=>({error}));
-  await Promise.race([afterRename,resultA.then(({error})=>{
+  await waitForTestBounded("post-rename barrier",Promise.race([afterRename,resultA.then(({error})=>{
    throw Error("writer A finished without reaching its post-rename checkpoint",{cause:error});
-  })]);
+  })]),15000);
   const selectedA=await readAtomicRelease(w.output);
   assert.equal(selectedA.provenance.note,provenanceA.note,
    "writer A must have made its release visible");
@@ -1198,7 +1209,7 @@ test("uncertain writer cannot claim current pointer after competing writer wins"
    manifest:baseline.manifest,provenance:provenanceB});
   assert.equal((await readAtomicRelease(w.output)).releaseSha256,b.releaseSha256);
   resumeFirst();
-  const {error,unexpectedSuccess}=await resultA;
+  const {error,unexpectedSuccess}=await waitForTestBounded("uncertain writer completion",resultA,25000);
   assert.equal(unexpectedSuccess,undefined);
   assert.ok(error instanceof AtomicReleaseCommitUncertainError);
   assert.equal(error.code,"ATOMIC_RELEASE_COMMIT_UNCERTAIN");
@@ -1422,17 +1433,7 @@ test("independent processes racing as publishers and readers never select partia
   });
   child.stdout.on("data",chunk=>{stdout+=chunk.toString("utf8")});
   child.stderr.on("data",chunk=>{stderr+=chunk.toString("utf8")});
-  // Test-runner timeout is only a report: it does not cancel a child or
-  // pending Promise. Put an independent deadline on every IPC phase.
-  async function within(label,promise,ms){
-   let timer;
-   try{
-    return await Promise.race([promise,new Promise((_,reject)=>{
-     timer=setTimeout(()=>reject(Error(label+" deadline exceeded")),ms);
-    })]);
-   }finally{clearTimeout(timer)}
-  }
-  await within("child READY handshake",Promise.race([
+  await waitForTestBounded("child READY handshake",Promise.race([
    new Promise(resolve=>{
     const checkReady=()=>{if(stdout.includes("READY\n"))resolve();
      else child.stdout.once("data",checkReady)};
@@ -1447,13 +1448,13 @@ test("independent processes racing as publishers and readers never select partia
     provenance:{...baseline.provenance,note:"parent-writer-"+i}
    });
   child.stdin.write("GO\n");
-  await within("concurrent publisher phase",Promise.all(parents),70000);
+  await waitForTestBounded("concurrent publisher phase",Promise.all(parents),70000);
   for(let i=0;i<10;i++){
    const current=await readAtomicRelease(w.output);
    assert.equal(execute(current.wasm),42n);
    assert.equal(current.manifest.producer.sourceSha256,current.provenance.sourceSha256);
   }
-  await within("external writer completion",done,15000);
+  await waitForTestBounded("external writer completion",done,15000);
   assert.match(stdout,/PUBLISHED [0-9a-f]{64}/);
   const external=stdout.match(/PUBLISHED ([0-9a-f]{64})/)[1];
   const inventory=await inspectAtomicReleaseState(w.output);
