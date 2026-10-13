@@ -15,7 +15,7 @@ const path=join(dir,"slot.wasm");
 const clang="/usr/bin/clang",clangBytes=await readFile(clang);
 const clangSha=sha(clangBytes);
 const next=[];
-for(const expected of [42,43]){
+for(const expected of [42,43,44,45]){
  const ir=Buffer.from('target triple = "wasm32-unknown-unknown"\ndefine i64 @main() { ret i64 '+expected+' }\n');
  const outfile=join(dir,"payload","artifact-"+expected+".wasm");
  const run=spawnSync(clang,["--target=wasm32","-x","ir","-Oz","-nostdlib",
@@ -43,8 +43,13 @@ for(const expected of [42,43]){
   if(selected.releaseSha256!==published.releaseSha256)throw Error("baseline verification failure");
   next.push({expected,releaseSha256:published.releaseSha256,wasmSha256:sha(wasm)});
  }else{
-  await writeFile(join(dir,"payload","next-provenance.json"),JSON.stringify(provenance)+"\n");
-  await writeFile(join(dir,"payload","next-manifest.json"),JSON.stringify(manifest)+"\n");
+  await writeFile(join(dir,"payload","next-provenance-"+expected+".json"),JSON.stringify(provenance)+"\n");
+  await writeFile(join(dir,"payload","next-manifest-"+expected+".json"),JSON.stringify(manifest)+"\n");
+  if(expected===43){
+   // The existing single-publisher crash matrix retains these aliases.
+   await writeFile(join(dir,"payload","next-provenance.json"),JSON.stringify(provenance)+"\n");
+   await writeFile(join(dir,"payload","next-manifest.json"),JSON.stringify(manifest)+"\n");
+  }
   // Derive the expected identity from the exact canonical seal, not from
   // the return value alone. The guest must later select THIS release, not an
   // unrelated valid i64-43 guest with a different hash.
