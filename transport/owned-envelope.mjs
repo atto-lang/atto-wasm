@@ -27,6 +27,8 @@ const safeKeys=Object.keys;
 const safeOwnKeys=Reflect.ownKeys;
 const safeIsArray=Array.isArray;
 const safeIsView=ArrayBuffer.isView;
+const safeInteger=Number.isInteger;
+const safeSafeInteger=Number.isSafeInteger;
 const safeSet=Uint8Array.prototype.set;
 const safeSubarray=Uint8Array.prototype.subarray;
 const primitiveJSON=JSON.stringify;
@@ -135,8 +137,8 @@ function dense(items,name){
 }
 function unique(a,label){for(let i=0;i<a.length;i++)for(let j=0;j<i;j++)if(a[i]===a[j])fail("duplicate "+label);}
 function name(x){if(typeof x!=="string"||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(x))fail("invalid name");return x;}
-function id(x){if(!Number.isInteger(x)||x<1||x>65535)fail("invalid ID");return x;}
-function bound(x){if(!Number.isInteger(x)||x<0||x>ITEMS)fail("invalid element bound");return x;}
+function id(x){if(!safeInteger(x)||x<1||x>65535)fail("invalid ID");return x;}
+function bound(x){if(!safeInteger(x)||x<0||x>ITEMS)fail("invalid element bound");return x;}
 function type(t,d=0,ctx){
  if(d>DEPTH)fail("type nesting too deep");
  if(++ctx.nodes>SCHEMA_NODES)fail("schema node budget exceeded");
@@ -225,7 +227,7 @@ class Writer{
 class Reader{
  constructor(b){this.b=b;this.at=0;this.dv=new DataView(b.buffer,b.byteOffset,b.byteLength);this.visits=0;}
  visit(){if(++this.visits>ITEMS)fail("value node budget exceeded");}
- take(n){if(!Number.isSafeInteger(n)||n<0||n>this.b.length-this.at)fail("truncated payload");
+ take(n){if(!safeSafeInteger(n)||n<0||n>this.b.length-this.at)fail("truncated payload");
   const x=safeSubarray.call(this.b,this.at,this.at+n);this.at+=n;return x;}
  u8(){this.take(1);return this.dv.getUint8(this.at-1);}
  u16(){this.take(2);return this.dv.getUint16(this.at-2,true);}
@@ -304,7 +306,7 @@ function snapshot(input,maxBytes){
  safeSet.call(result,src);
  return result;
 }
-function budget(n){if(!Number.isSafeInteger(n)||n<HEADER||n>LIMIT)fail("invalid maxBytes");}
+function budget(n){if(!safeSafeInteger(n)||n<HEADER||n>LIMIT)fail("invalid maxBytes");}
 export async function encodeMessage(schema,message,{maxBytes=LIMIT}={}){
  budget(maxBytes);
  const c=contract(schema);
