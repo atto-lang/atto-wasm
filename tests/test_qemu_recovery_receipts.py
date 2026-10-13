@@ -94,7 +94,7 @@ class QemuRecoveryReceiptTest(unittest.TestCase):
         report=transcript("multi3").replace("value=43 ","value=45 ")
         with self.assertRaisesRegex(RuntimeError,"did not complete"):
             qemu.validate_cold_boot_receipt(
-                report.replace("GUEST_PROCESS_CLEAN_FINISH\\n",""),"multi3",0)
+                report.replace("GUEST_PROCESS_CLEAN_FINISH",""),"multi3",0)
         with self.assertRaisesRegex(RuntimeError,"abnormally"):
             qemu.validate_cold_boot_receipt(report,"multi3",137)
 
