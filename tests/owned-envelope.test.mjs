@@ -658,3 +658,36 @@ test("ABI labels are bounded ASCII independent of RegExp.prototype.test",async()
  assert.deepEqual(decoded,good);
  assert.deepEqual(rejected,[true,true,true,true,true]);
 });
+
+test("DataView wire fields and WebCrypto digest ignore hostile method replacements",async()=>{
+ const message={variant:"Batch",fields:{pair:["safe",42n],fixed:[true,false],
+  items:["owned","bytes"],state:{variant:"Some",value:[1n,"nested"]},
+  blob:new Uint8Array([0,19,255])}};
+ const baseline=await encodeMessage(contract,message);
+ const expected=await decodeMessage(contract,baseline);
+ const names=["getUint8","getUint16","getUint32","getBigInt64",
+  "setUint8","setUint16","setUint32","setBigInt64"];
+ const entries=names.map(key=>[DataView.prototype,key]);
+ const subtle=globalThis.crypto?.subtle;
+ assert.ok(subtle&&typeof subtle.digest==="function","real SHA-256 is required");
+ const proto=Object.getPrototypeOf(subtle);
+ entries.push([Object.getOwnPropertyDescriptor(proto,"digest")?proto:subtle,"digest"]);
+ const originals=entries.map(([owner,key])=>Object.getOwnPropertyDescriptor(owner,key));
+ let calls=0,encoded,decoded;
+ const poison=()=>{calls++;throw Error("mutable wire or SHA-256 callback executed");};
+ try{
+  for(const [owner,key] of entries)
+   Object.defineProperty(owner,key,{configurable:true,writable:true,value:poison});
+  encoded=await encodeMessage(contract,message);
+  decoded=await decodeMessage(contract,baseline);
+ }finally{
+  for(let i=entries.length-1;i>=0;i--){
+   const [owner,key]=entries[i];
+   if(originals[i])Object.defineProperty(owner,key,originals[i]);
+   else delete owner[key];
+  }
+ }
+ assert.equal(calls,0,"mutable DataView and WebCrypto callbacks must not execute");
+ assert.deepEqual(encoded,baseline,"wire bytes must survive poisoned setters and digest");
+ assert.deepEqual(decoded,expected,"wire fields must survive poisoned getters and digest");
+});
