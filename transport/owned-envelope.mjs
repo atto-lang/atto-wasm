@@ -10,7 +10,7 @@ const HEADER=44, LIMIT=1048576, DEPTH=12, ITEMS=4096;
 const SCHEMA_NODES=4096, SCHEMA_BYTES=65536;
 const magic=Uint8Array.of(79,82,77,49);
 const enc=new TextEncoder(),dec=new TextDecoder("utf-8",{fatal:true});
-const prim=new Set(["string","i64","bool","bytes"]);
+// Primitive type admission uses literal comparisons, never mutable Set.prototype.has.
 const safeDescriptor=Object.getOwnPropertyDescriptor;
 const safePrototype=Object.getPrototypeOf;
 const safeHasOwn=Object.hasOwn;
@@ -129,7 +129,7 @@ function bound(x){if(!Number.isInteger(x)||x<0||x>ITEMS)fail("invalid element bo
 function type(t,d=0,ctx){
  if(d>DEPTH)fail("type nesting too deep");
  if(++ctx.nodes>SCHEMA_NODES)fail("schema node budget exceeded");
- if(prim.has(t))return t;
+ if(t==="string"||t==="i64"||t==="bool"||t==="bytes")return t;
  shape(t,["tuple","array","list","enum"],"type");
  const ks=safeKeys(t);if(ks.length!==1)fail("exactly one type required");
  const k=ks[0];
