@@ -156,3 +156,36 @@ test("proxy byte views cannot spoof original native byteLength admission",()=>{
  assert.throws(()=>inspect(viewProxy),/expected a Wasm ArrayBuffer or typed array|shared or proxy-backed/);
  assert.equal(triggered,0);
 });
+
+test("Wasm byte brand admission never invokes mutable WebAssembly.Module instanceof hooks",()=>{
+ const original=Object.getOwnPropertyDescriptor(WebAssembly,"Module");
+ const realModule=original.value;
+ const compiled=new realModule(bounded);
+ const oldHasInstance=Object.getOwnPropertyDescriptor(realModule,Symbol.hasInstance);
+ let callbacks=0;
+ function PoisonedModule(){}
+ Object.defineProperty(PoisonedModule,Symbol.hasInstance,{configurable:true,
+  value(){callbacks++;throw Error("poisoned WebAssembly instanceof callback")}});
+ try{
+  // The old `input instanceof WebAssembly.Module` invoked this callback.
+  Object.defineProperty(WebAssembly,"Module",{configurable:true,writable:true,
+   value:PoisonedModule});
+  assert.deepEqual(inspect(bounded).bytes,bounded);
+  assert.throws(()=>inspect(unbounded),/memory requires fixed initial and maximum limits/);
+  assert.throws(()=>inspect(compiled),/expected a Wasm ArrayBuffer or typed array/);
+  assert.equal(callbacks,0);
+ }finally{Object.defineProperty(WebAssembly,"Module",original)}
+ try{
+  // Replacing the public constructor is not required: an own @@hasInstance
+  // on the original constructor also intercepted `instanceof`.
+  Object.defineProperty(realModule,Symbol.hasInstance,{
+   configurable:true,value(){callbacks++;throw Error("poisoned native hasInstance")}
+  });
+  assert.deepEqual(inspect(bounded).bytes,bounded);
+  assert.throws(()=>inspect(compiled),/expected a Wasm ArrayBuffer or typed array/);
+  assert.equal(callbacks,0);
+ }finally{
+  if(oldHasInstance)Object.defineProperty(realModule,Symbol.hasInstance,oldHasInstance);
+  else delete realModule[Symbol.hasInstance];
+ }
+});
