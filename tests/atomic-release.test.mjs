@@ -1275,9 +1275,11 @@ test("regex prototype poisoning cannot bypass provenance SHA or reject valid pub
    good=publishAtomicRelease({output:w.output,wasm:baseline.wasm,
     manifest:baseline.manifest,
     provenance:{...baseline.provenance,note:"native-regex-publication"}});
+   // Attach rejection ownership synchronously, before the next event-loop turn.
    bad=publishAtomicRelease({output:w.output,wasm:baseline.wasm,
     manifest:poisonedManifest,
     provenance:{...baseline.provenance,compilerSha256:"not-a-sha"}});
+   bad.catch(()=>{});
   }finally{
    if(priorTest)Object.defineProperty(RegExp.prototype,"test",priorTest);
    else delete RegExp.prototype.test;
