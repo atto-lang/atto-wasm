@@ -6,7 +6,7 @@ import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename,symlink,unlink}
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
-import {publishAtomicRelease,readAtomicRelease,inspectAtomicReleaseState,AtomicReleaseCommitUncertainError} from "../scripts/atomic-release.mjs";
+import {publishAtomicRelease,readAtomicRelease,inspectAtomicReleaseState,AtomicReleaseCommitUncertainError,canonicalReleaseMetadata} from "../scripts/atomic-release.mjs";
 
 async function workspace(){
  const dir=await mkdtemp(join(tmpdir(),"oreslang-atomic-release-"));
@@ -1106,4 +1106,20 @@ test("compiler scratch cleanup cannot mask a failure through inherited receipt s
   else delete Object.prototype.cleanupFailures;
   await cleanup(w.dir);
  }
+});
+
+test("canonical metadata encoder enforces exact aggregate UTF-8 byte budget",()=>{
+ const exact={k:"x".repeat(16384-9)};
+ const output=canonicalReleaseMetadata(exact);
+ assert.equal(output.length,16384,"limit includes JSON punctuation and terminal newline");
+ assert.equal(output.toString("utf8"),JSON.stringify(exact)+"\\n");
+ assert.throws(()=>canonicalReleaseMetadata({k:"x".repeat(16384-8)}),
+  /canonical metadata byte budget/);
+ // Count UTF-8 bytes rather than JS UTF-16 units or Unicode code points.
+ assert.throws(()=>canonicalReleaseMetadata({k:"😀".repeat(5000)}),
+  /canonical metadata byte budget/);
+ // Dense arrays must not be allowed to grow serialization output indefinitely.
+ assert.throws(()=>canonicalReleaseMetadata(Array(9000).fill(0)),
+  /canonical metadata byte budget/);
+ const longKey={["k".repeat(16385)]:0};\n assert.throws(()=>canonicalReleaseMetadata(longKey),/canonical metadata byte budget/);
 });
