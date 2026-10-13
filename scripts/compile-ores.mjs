@@ -4,6 +4,8 @@
  * There is no fallback or mock compiler; caller must pass a real binary.
  */
 import {spawnSync} from "node:child_process";
+import {constants as fsConstants} from "node:fs";
+import {Buffer} from "node:buffer";
 import {createHash} from "node:crypto";
 import {readFile,writeFile,mkdir,mkdtemp,rm,rename,realpath,stat,lstat} from "node:fs/promises";
 import {dirname,resolve,isAbsolute,join,basename} from "node:path";
@@ -17,6 +19,17 @@ const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const nativeHasOwn=Object.hasOwn;
 // Regex admission must bypass both mutable RegExp.prototype.test and .exec.
 const intrinsicApply=Reflect.apply;
+// Pin native admission and serialization methods at module import. Post-import
+// monkey-patching must not bypass Wasm ABI or provenance checks.
+const intrinsicWasmNamespace=WebAssembly;
+const intrinsicWasmValidate=WebAssembly.validate;
+const intrinsicWasmModule=WebAssembly.Module;
+const intrinsicWasmImports=WebAssembly.Module.imports;
+const intrinsicWasmExports=WebAssembly.Module.exports;
+const intrinsicBufferFrom=Buffer.from;
+const nativeFileModeMask=fsConstants.S_IFMT;
+const nativeFileModeRegular=fsConstants.S_IFREG;
+const isNativeFile=st=>(st.mode&nativeFileModeMask)===nativeFileModeRegular;
 const intrinsicRegExpExec=RegExp.prototype.exec;
 const intrinsicRegExp=RegExp;
 const regexExec=(pattern,value)=>
@@ -187,9 +200,9 @@ export async function compileOresToWasm({
  // Preflight before readFile() to avoid allocating attacker-sized compiler
  // binaries or source buffers, then check the lengths again after reading.
  const sourceStat=await stat(sourcePath),compilerStat=await stat(compilerPath);
- if(!sourceStat.isFile()||sourceStat.size>MAX_SOURCE_BYTES)
+ if(!isNativeFile(sourceStat)||sourceStat.size>MAX_SOURCE_BYTES)
   throw Error("source exceeds 1 MiB compiler bridge budget or is not a regular file");
- if(!compilerStat.isFile()||compilerStat.size>MAX_COMPILER_BYTES)
+ if(!isNativeFile(compilerStat)||compilerStat.size>MAX_COMPILER_BYTES)
   throw Error("compiler exceeds 256 MiB executable budget or is not a regular file");
  // A destination that already exists might itself be a symlink or hard link
  // to an input. Reject by inode identity before publishing over the link.
@@ -250,17 +263,17 @@ export async function compileOresToWasm({
    "-Wl,--initial-memory=131072","-Wl,--max-memory=131072",
    "-o",provisional,"-"],{input:ir});
  const wasmStat=await stat(provisional);
- if(!wasmStat.isFile()||wasmStat.size>MAX_WASM_BYTES)
+ if(!isNativeFile(wasmStat)||wasmStat.size>MAX_WASM_BYTES)
   throw Error("linked Wasm exceeds 16 MiB artifact budget");
  const wasm=await readFile(provisional);
  if(wasm.length>MAX_WASM_BYTES)throw Error("linked Wasm exceeds 16 MiB artifact budget");
- if(!WebAssembly.validate(wasm))throw Error("linker emitted invalid core Wasm");
+ if(!intrinsicApply(intrinsicWasmValidate,intrinsicWasmNamespace,[wasm]))throw Error("linker emitted invalid core Wasm");
  rejectStartSection(wasm);
- const module=new WebAssembly.Module(wasm);
- const imports=WebAssembly.Module.imports(module);
+ const module=new intrinsicWasmModule(wasm);
+ const imports=intrinsicApply(intrinsicWasmImports,intrinsicWasmModule,[module]);
  if(imports.length)throw Error("guest Wasm unexpectedly imports host modules");
  let foundExport=false;
-  const exported=WebAssembly.Module.exports(module);
+  const exported=intrinsicApply(intrinsicWasmExports,intrinsicWasmModule,[module]);
   for(let i=0;i<exported.length;i++){
    const item=exported[i];
    if(item.name===exportName&&item.kind==="function"){foundExport=true;break}
@@ -275,7 +288,7 @@ export async function compileOresToWasm({
  const record={
   schemaVersion:1,kind:"llvm-ores-to-wasm32-core-experimental",
   compilerSha256:actualCompilerHash,sourceSha256:sha(sourceBytes),
-  llvmIrSha256:sha(Buffer.from(ir,"utf8")),wasmSha256:sha(wasm),
+  llvmIrSha256:sha(intrinsicApply(intrinsicBufferFrom,Buffer,[ir,"utf8"])),wasmSha256:sha(wasm),
   exportName,importCount:imports.length,wasmBytes:wasm.length,
   clangVersion:run(clang,["--version"]).split("\n")[0],
   note:"Binary provenance: exact compiler executable bytes, not proof of source-repository commit or feature parity."
@@ -288,7 +301,7 @@ export async function compileOresToWasm({
    wasmSha256:sha(wasm),wasmBytes:wasm.length,requiredCapabilities:[],
    imports:[],memory:{maximumPages:2},
    producer:{compilerSha256:actualCompilerHash,
-     sourceSha256:sha(sourceBytes),llvmIrSha256:sha(Buffer.from(ir,"utf8"))}
+     sourceSha256:sha(sourceBytes),llvmIrSha256:sha(intrinsicApply(intrinsicBufferFrom,Buffer,[ir,"utf8"]))}
   };
   await writeFile(join(scratch,"artifact.json"),canonicalReleaseMetadata(manifest));
  }
