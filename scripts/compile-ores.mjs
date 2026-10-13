@@ -22,7 +22,15 @@ const intrinsicRegExp=RegExp;
 const regexExec=(pattern,value)=>
  intrinsicApply(intrinsicRegExpExec,pattern,[value]);
 const regexMatches=(pattern,value)=>regexExec(pattern,value)!==null;
-const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
+// Compiled guest provenance is a security boundary: never dispatch through
+// mutable Hash.prototype.update/digest after module import.
+const nativeHashUpdate=createHash("sha256").update;
+const nativeHashDigest=createHash("sha256").digest;
+const sha=bytes=>{
+ const hash=createHash("sha256");
+ intrinsicApply(nativeHashUpdate,hash,[bytes]);
+ return intrinsicApply(nativeHashDigest,hash,["hex"]);
+};
 const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES=16*1024*1024;
 function rejectStartSection(bytes){
  let i=8;
