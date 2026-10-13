@@ -2,18 +2,52 @@
  * Small, bounded reader for the pieces of core Wasm required to enforce
  * loader policy. This is *not* a general Wasm parser or execution sandbox.
  */
+// Inspect owned native byte views, never caller-overridable properties,
+// iterators, static Uint8Array.from, or prototype-dependent instanceof checks.
+const intrinsicApply=Reflect.apply;
+const intrinsicUint8Array=Uint8Array;
+const intrinsicIsView=ArrayBuffer.isView;
+const intrinsicIsSafeInteger=Number.isSafeInteger;
+const intrinsicValidate=WebAssembly.validate;
+const intrinsicTypedProto=Object.getPrototypeOf(Uint8Array.prototype);
+const getTypedBuffer=Object.getOwnPropertyDescriptor(intrinsicTypedProto,"buffer").get;
+const getTypedOffset=Object.getOwnPropertyDescriptor(intrinsicTypedProto,"byteOffset").get;
+const getTypedLength=Object.getOwnPropertyDescriptor(intrinsicTypedProto,"byteLength").get;
+const getRawBufferLength=Object.getOwnPropertyDescriptor(ArrayBuffer.prototype,"byteLength").get;
+const getDataViewBuffer=Object.getOwnPropertyDescriptor(DataView.prototype,"buffer").get;
+const getDataViewOffset=Object.getOwnPropertyDescriptor(DataView.prototype,"byteOffset").get;
+const getDataViewLength=Object.getOwnPropertyDescriptor(DataView.prototype,"byteLength").get;
+const intrinsicSet=Uint8Array.prototype.set;
 export function inspectWasmBytes(input,{maxModuleBytes=1048576,maxMemoryPages=32}={}){
- if(!Number.isSafeInteger(maxModuleBytes)||maxModuleBytes<8||maxModuleBytes>16*1024*1024)throw new TypeError("invalid maximum module size");
- if(!Number.isSafeInteger(maxMemoryPages)||maxMemoryPages<1||maxMemoryPages>256)throw new TypeError("invalid maximum memory pages");
+ if(!intrinsicIsSafeInteger(maxModuleBytes)||maxModuleBytes<8||maxModuleBytes>16*1024*1024)throw new TypeError("invalid maximum module size");
+ if(!intrinsicIsSafeInteger(maxMemoryPages)||maxMemoryPages<1||maxMemoryPages>256)throw new TypeError("invalid maximum memory pages");
  if(input instanceof WebAssembly.Module)throw new TypeError("precompiled WebAssembly.Module cannot be inspected: provide original bytes");
- let bytes;
- if(input instanceof ArrayBuffer)bytes=new Uint8Array(input);
- else if(ArrayBuffer.isView(input))bytes=new Uint8Array(input.buffer,input.byteOffset,input.byteLength);
- else throw new TypeError("expected a Wasm ArrayBuffer or typed array");
- if(bytes.byteLength>maxModuleBytes)throw new Error("Wasm module exceeds maximum byte size");
- // Snapshot any supplied view before inspecting; never validate bytes that can
- // change between admission and WebAssembly.Module compilation (TOCTOU).
- bytes=Uint8Array.from(bytes);
+ let backing,offset=0,size;
+ try{
+  // Native byteLength getter rejects a forged ArrayBuffer prototype.
+  size=intrinsicApply(getRawBufferLength,input,[]);
+  backing=input;
+ }catch{
+  if(!intrinsicIsView(input))
+   throw new TypeError("expected a Wasm ArrayBuffer or typed array");
+  try{
+   backing=intrinsicApply(getTypedBuffer,input,[]);
+   offset=intrinsicApply(getTypedOffset,input,[]);
+   size=intrinsicApply(getTypedLength,input,[]);
+  }catch{
+   try{
+    backing=intrinsicApply(getDataViewBuffer,input,[]);
+    offset=intrinsicApply(getDataViewOffset,input,[]);
+    size=intrinsicApply(getDataViewLength,input,[]);
+   }catch{throw new TypeError("expected a Wasm ArrayBuffer or typed array")}
+  }
+ }
+ if(size>maxModuleBytes)throw new Error("Wasm module exceeds maximum byte size");
+ // Copy exactly the native backing-view bytes, without consulting mutable
+ // Symbol.iterator, Buffer/typed-array getters, or Uint8Array.from.
+ // This is the single snapshot used for the rest of policy inspection.
+ const bytes=new intrinsicUint8Array(size);
+ intrinsicApply(intrinsicSet,bytes,[new intrinsicUint8Array(backing,offset,size)]);
  const fail=message=>{throw new Error("Wasm admission denied: "+message)};
  if(bytes.length<8||bytes[0]!==0||bytes[1]!==97||bytes[2]!==115||bytes[3]!==109||
     bytes[4]!==1||bytes[5]!==0||bytes[6]!==0||bytes[7]!==0)fail("invalid core module header");
@@ -52,6 +86,6 @@ export function inspectWasmBytes(input,{maxModuleBytes=1048576,maxMemoryPages=32
   }
   at=end;
  }
- if(!WebAssembly.validate(bytes))fail("invalid WebAssembly module");
+ if(!intrinsicValidate(bytes))fail("invalid WebAssembly module");
  return {bytes,memoryCount,hasMemoryMaximum,memoryInitial,memoryMaximum};
 }
