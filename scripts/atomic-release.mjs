@@ -23,6 +23,14 @@ const FILE_MODE_DIRECTORY=fsConstants.S_IFDIR;
 const SEALED_READ_FLAGS=fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK;
 const isNativeFile=stat=>(stat.mode&FILE_MODE_MASK)===FILE_MODE_REGULAR;
 const isNativeDirectory=stat=>(stat.mode&FILE_MODE_MASK)===FILE_MODE_DIRECTORY;
+// A rename-able pointer in a group/world-writable directory is not protected
+// by a sealed content-addressed payload. Require private owner-controlled
+// parents and release roots, including directories that existed before mkdir.
+const isPrivateDirectory=stat=>isNativeDirectory(stat)&&(stat.mode&0o022)===0;
+async function requirePrivatePointerParent(pointer){
+ const stat=await lstat(dirname(pointer));
+ if(!isPrivateDirectory(stat))fail("unsafe atomic pointer parent directory");
+}
 // Sealed-file verification must operate on the actual bytes read from disk.
 // Capture Buffer operations before any post-import prototype or static-method
 // mutation; never allow a replaced .subarray/.concat/.equals to forge bytes.
@@ -272,7 +280,7 @@ function descriptorFor(wasm,manifest,provenance){
 async function verifyDir(dir,id){
  if(!hex(id))fail("invalid identity");
  const st=await lstat(dir);
- if(!isNativeDirectory(st))fail("release is not a real directory");
+ if(!isPrivateDirectory(st))fail("release is not a private directory");
  const seal=parseCanonicalSeal(await safeFile(join(dir,"seal.json"),16384));
  // A content-addressed release has a CLOSED on-disk namespace: hashes of
  // expected files do not authorize extra sidecars, executables or symlinks.
@@ -315,8 +323,9 @@ async function verifyDir(dir,id){
 }
 export async function readAtomicRelease(output){
  const {root,pointer}=paths(resolve(output));
+ await requirePrivatePointerParent(pointer);
  const st=await lstat(root);
- if(!isNativeDirectory(st))fail("invalid release root");
+ if(!isPrivateDirectory(st))fail("invalid or unsafe release root");
  const pointerBytes=await safeFile(pointer,16384);
  let p;
  try{p=parseUTF8JSON(pointerBytes)}
@@ -354,8 +363,9 @@ export async function publishAtomicRelease({
   fail("metadata exceeds 16 KiB");
  await mkdir(dirname(destination),{recursive:true});
  await mkdir(root,{recursive:true,mode:0o700});
+ await requirePrivatePointerParent(pointer);
  const rootStat=await lstat(root);
- if(!isNativeDirectory(rootStat))fail("release root symlink");
+ if(!isPrivateDirectory(rootStat))fail("release root symlink or unsafe permissions");
  // Persist the release-root directory entry before any pointer can refer to it.
  await fsyncDirectory(dirname(root));
  const stage=await mkdtemp(join(root,".staging-"));
@@ -448,7 +458,7 @@ export async function inspectAtomicReleaseState(output){
  let entries;
  try{
   const stat=await lstat(root);
-  if(!isNativeDirectory(stat))fail("invalid release root");
+  if(!isPrivateDirectory(stat))fail("invalid or unsafe release root");
   entries=await readdir(root,{withFileTypes:true});
  }catch(error){
   if(error?.code==="ENOENT")
