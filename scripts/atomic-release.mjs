@@ -9,6 +9,8 @@ import {rename,rm,mkdir,mkdtemp,lstat,chmod,open,readdir} from "node:fs/promises
 import {join,dirname,resolve} from "node:path";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
 import {inspectWasmBytes} from "./inspect-core-memory.mjs";
+import {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
+export {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
 const digest=b=>createHash("sha256").update(b).digest("hex");
 const hex=x=>typeof x==="string"&&/^[0-9a-f]{64}$/.test(x);
 // JSON Schema maxLength counts Unicode code points, not UTF-16 units.
@@ -71,74 +73,6 @@ const paths=output=>({root:output+".releases",pointer:output+".current.json"});
 function cleanupMessage(error){
  try{return String(error?.message||error).slice(0,256)}
  catch{return "cleanup failure (details unavailable)"}
-}
-// Closed descriptor-only encoder reused for legacy and atomic metadata.
-// Enforce an aggregate byte budget as well as recursion depth. Without it,
-// the exported encoder could allocate unbounded JSON from a dense array or an
-// oversized string even when the publisher's closed schemas are stricter.
-const MAX_CANONICAL_BYTES=16384;
-export function canonicalReleaseMetadata(x){
- let remaining=MAX_CANONICAL_BYTES-1; // Reserve one byte for the trailing LF.
- function emit(part){
-  const n=Buffer.byteLength(part,"utf8");
-  if(n>remaining)fail("canonical metadata byte budget");
-  remaining-=n;
-  return part;
- }
- function serialize(value,depth){
-  if(depth>16)fail("canonical metadata nesting limit");
-  if(value===null||typeof value==="string"||typeof value==="boolean"||
-      (typeof value==="number"&&Number.isFinite(value))){
-   // Check UTF-16 length before JSON escaping allocates an oversized string.
-   if(typeof value==="string"&&value.length>MAX_CANONICAL_BYTES)
-    fail("canonical metadata byte budget");
-   return emit(JSON.stringify(value));
-  }
-  if(!value||typeof value!=="object"||isProxy(value))
-   fail("invalid canonical metadata value");
-  if(Array.isArray(value)){
-   if(Object.getPrototypeOf(value)!==Array.prototype)
-    fail("invalid canonical metadata array prototype");
-   const length=Object.getOwnPropertyDescriptor(value,"length")?.value;
-   if(!Number.isSafeInteger(length)||length<0)
-    fail("invalid canonical metadata array properties");
-   // Every element consumes at least one byte, plus one separator except the
-   // first. Reject a giant array before Reflect.ownKeys materializes its keys.
-   if(length>(MAX_CANONICAL_BYTES-2)/2)
-    fail("canonical metadata byte budget");
-   const keys=Reflect.ownKeys(value);
-   if(keys.length!==length+1||keys[keys.length-1]!=="length")
-    fail("invalid canonical metadata array properties");
-   let encoded=emit("[");
-   for(let i=0;i<length;i++){
-    if(keys[i]!==String(i))fail("invalid canonical metadata array index");
-    const item=Object.getOwnPropertyDescriptor(value,String(i));
-    if(!item||!Object.hasOwn(item,"value")||!item.enumerable)
-     fail("invalid canonical metadata array element");
-    if(i!==0)encoded+=emit(",");
-    encoded+=serialize(item.value,depth+1);
-   }
-   return encoded+emit("]");
-  }
-  const prototype=Object.getPrototypeOf(value);
-  if(prototype!==Object.prototype&&prototype!==null)
-   fail("invalid canonical metadata prototype");
-  const keys=Object.keys(value);
-  if(Reflect.ownKeys(value).length!==keys.length)
-   fail("invalid canonical metadata hidden fields");
-  let encoded=emit("{");
-  for(let i=0;i<keys.length;i++){
-   const key=keys[i];
-   const descriptor=Object.getOwnPropertyDescriptor(value,key);
-   if(!descriptor||!descriptor.enumerable||!Object.hasOwn(descriptor,"value"))
-    fail("invalid canonical metadata field");
-   if(i!==0)encoded+=emit(",");
-   if(key.length>MAX_CANONICAL_BYTES)fail("canonical metadata byte budget");
-   encoded+=emit(JSON.stringify(key))+emit(":")+serialize(descriptor.value,depth+1);
-  }
-  return encoded+emit("}");
- }
- return Buffer.from(serialize(x,0)+String.fromCharCode(10));
 }
 const canonical=canonicalReleaseMetadata;
 // Array.length alone does not make an empty metadata array a closed record:
