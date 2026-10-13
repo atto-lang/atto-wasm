@@ -128,3 +128,31 @@ test("forged view prototypes and out-of-budget byte sources fail closed",()=>{
  assert.throws(()=>inspectWasmBytes(giant,{maxModuleBytes:128,maxMemoryPages:2}),
   /maximum byte size/);
 });
+
+
+test("shared Wasm byte backing is forbidden before cross-thread mutable snapshot",()=>{
+ if(typeof SharedArrayBuffer==="undefined")return;
+ const shared=new SharedArrayBuffer(bounded.length);
+ new Uint8Array(shared).set(bounded);
+ for(const value of [shared,new Uint8Array(shared),
+  new DataView(shared),new Uint8Array(shared,0,bounded.length)]){
+  assert.throws(()=>inspect(value),
+   /shared or proxy-backed Wasm input cannot be snapshotted safely/);
+ }
+ // Copying into a caller-owned ordinary ArrayBuffer is safe and remains
+ // accepted even when a shared source would otherwise be syntactically valid.
+ const ordinary=new Uint8Array(bounded.length);
+ ordinary.set(new Uint8Array(shared));
+ assert.deepEqual(inspect(ordinary).bytes,bounded);
+});
+
+test("proxy byte views cannot spoof original native byteLength admission",()=>{
+ const source=new Uint8Array(bounded);
+ let triggered=0;
+ const viewProxy=new Proxy(source,{
+  get(){triggered++;throw Error("forged byte view property")},
+  getPrototypeOf(){triggered++;return Uint8Array.prototype}
+ });
+ assert.throws(()=>inspect(viewProxy),/expected a Wasm ArrayBuffer or typed array|shared or proxy-backed/);
+ assert.equal(triggered,0);
+});
