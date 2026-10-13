@@ -21,6 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s tests -p 'test_qemu_recovery_receipts.py' -v
+          node --test tests/qemu-writer-liveness.test.mjs
       - name: Install version-locked fixture Clang and disposable QEMU guest kernel
         shell: bash
         run: |
