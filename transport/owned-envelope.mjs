@@ -59,6 +59,7 @@ function normalizedJSON(value){
 // Subclass overrides of .buffer, .length or Symbol.iterator must not choose
 // the bytes that are charged to a budget, hashed, or delivered to a guest.
 const typedProto=safePrototype(Uint8Array.prototype);
+const typedTag=safeDescriptor(typedProto,Symbol.toStringTag).get;
 const typedBuffer=safeDescriptor(typedProto,"buffer").get;
 const typedOffset=safeDescriptor(typedProto,"byteOffset").get;
 const typedLength=safeDescriptor(typedProto,"byteLength").get;
@@ -74,9 +75,10 @@ function checkedView(b){
   buffer=typedBuffer.call(b);offset=typedOffset.call(b);
   length=typedLength.call(b);
  }catch{fail("invalid byte view");}
- if(!(b instanceof Uint8Array))fail("expected Uint8Array");
- if(typeof SharedArrayBuffer!=="undefined"&&buffer instanceof SharedArrayBuffer)
-  fail("shared memory not admitted");
+ // Object.setPrototypeOf cannot falsify the intrinsic typed-array kind.
+ if(typedTag.call(b)!=="Uint8Array")fail("expected Uint8Array");
+ // ArrayBuffer intrinsic rejects SharedArrayBuffer regardless of its prototype.
+ try{arrayBufferLength.call(buffer);}catch{fail("shared memory not admitted");}
  return new Uint8Array(buffer,offset,length);
 }
 const plain=x=>x!==null&&typeof x==="object"&&safeIncludes([Object.prototype,null],safePrototype(x));
@@ -284,8 +286,7 @@ function snapshot(input,maxBytes){
   try{length=arrayBufferLength.call(input);buffer=input;}
   catch{fail("expected message bytes");}
  }
- if(typeof SharedArrayBuffer!=="undefined"&&buffer instanceof SharedArrayBuffer)
-  fail("shared memory not admitted");
+ try{arrayBufferLength.call(buffer);}catch{fail("shared memory not admitted");}
  // Reject before creating an owned copy, otherwise a huge untrusted view
  // can force an unbounded allocation ahead of the 1 MiB message budget.
  if(length<HEADER||length>maxBytes)fail("invalid message size");
