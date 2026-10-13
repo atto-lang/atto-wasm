@@ -31,6 +31,22 @@ class QemuRecoveryReceiptTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"nonzero process"):
             qemu.validate_cold_boot_receipt(transcript(error=True),HOOK,0)
 
+    def test_clean_completion_must_follow_the_verified_receipt(self):
+        report=transcript()
+        lines=report.splitlines()
+        marker="GUEST_PROCESS_CLEAN_FINISH"
+        lines.remove(marker)
+        # A stale/fabricated clean marker prior to verification cannot
+        # certify a later recovery report.
+        lines.insert(1,marker)
+        with self.assertRaisesRegex(RuntimeError,"preceded recovery receipt"):
+            qemu.validate_cold_boot_receipt("\\n".join(lines)+"\\n",HOOK,0)
+
+    def test_duplicate_clean_completion_never_certifies_recovery(self):
+        report=transcript()+"GUEST_PROCESS_CLEAN_FINISH\\n"
+        with self.assertRaisesRegex(RuntimeError,"did not complete"):
+            qemu.validate_cold_boot_receipt(report,HOOK,0)
+
     def test_abnormal_qemu_exit_is_not_success(self):
         with self.assertRaisesRegex(RuntimeError,"abnormally"):
             qemu.validate_cold_boot_receipt(transcript(),HOOK,137)
