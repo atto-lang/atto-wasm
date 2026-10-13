@@ -24,6 +24,7 @@ const intrinsicBufferSubarray=Buffer.prototype.subarray;
 const intrinsicBufferEquals=Buffer.prototype.equals;
 const intrinsicBufferToString=Buffer.prototype.toString;
 const intrinsicUint8Array=Uint8Array;
+const intrinsicTypedArraySet=Uint8Array.prototype.set;
 const intrinsicRegExpExec=RegExp.prototype.exec;
 const regexMatches=(pattern,value)=>
  intrinsicApply(intrinsicRegExpExec,pattern,[value])!==null;
@@ -76,9 +77,13 @@ function ownedWasmSnapshot(wasm){
  if(!isUint8Array(wasm)||isSharedArrayBuffer(backing))
   fail("invalid Wasm bytes");
  if(length<8||length>16777216)fail("Wasm budget");
- // Newly constructed intrinsic view has no caller-controlled prototype
- // overrides; it is copied synchronously before metadata validation.
- return intrinsicApply(intrinsicBufferFrom,Buffer,[new intrinsicUint8Array(backing,offset,length)]);
+ // Buffer.from(view) consults view.length, which can be replaced by an
+ // inherited getter even when Buffer.from itself is captured. Copy using
+ // native typed-array internal slots, without reading any view property.
+ const snapshot=intrinsicApply(intrinsicBufferAllocUnsafe,Buffer,[length]);
+ intrinsicApply(intrinsicTypedArraySet,snapshot,
+  [new intrinsicUint8Array(backing,offset,length)]);
+ return snapshot;
 }
 
 // A pointer rename is the visibility/linearization point. If the subsequent
