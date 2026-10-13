@@ -490,3 +490,25 @@ test("owned byte copies and u8 admission ignore poisoned Uint8Array helpers",asy
  assert.deepEqual(after,baseline,"encoded bytes must be stable under poisoning");
  assert.deepEqual(decoded,expected,"owned decoded byte buffers must be unchanged");
 });
+
+test("native byte brands reject forged typed-array and shared-buffer prototypes",async()=>{
+ const fields={pair:["hi",1n],fixed:[true,false],items:[],
+  state:{variant:"None",value:null},blob:new Uint8Array([1,2])};
+ const disguisedWord=new Uint16Array([0x1020]);
+ Object.setPrototypeOf(disguisedWord,Uint8Array.prototype);
+ assert.equal(disguisedWord instanceof Uint8Array,true,"exposes instanceof spoof");
+ await assert.rejects(encodeMessage(contract,{variant:"Batch",fields:{...fields,blob:disguisedWord}}),
+  /expected Uint8Array/);
+ if(typeof SharedArrayBuffer!=="undefined"){
+  const shared=new SharedArrayBuffer(64);
+  const sharedView=new Uint8Array(shared);
+  Object.setPrototypeOf(shared,ArrayBuffer.prototype);
+  assert.equal(shared instanceof SharedArrayBuffer,false,"exposes backing-buffer instanceof spoof");
+  await assert.rejects(encodeMessage(contract,{variant:"Batch",fields:{...fields,blob:sharedView}}),
+   /shared memory not admitted/);
+  await assert.rejects(decodeMessage(contract,sharedView),/shared memory not admitted/);
+ }
+ const valid=await encodeMessage(contract,{variant:"Batch",fields});
+ const roundtrip=await decodeMessage(contract,valid);
+ assert.deepEqual(roundtrip,{variant:"Batch",fields});
+});
