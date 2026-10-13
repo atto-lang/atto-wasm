@@ -1314,3 +1314,34 @@ test("compiler bridge export admission ignores poisoned RegExp.test and exec",as
   await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
  }finally{await cleanup(w.dir)}
 });
+
+test("verified sealed directories reject untracked sidecars and symlinks",async()=>{
+ for(const withManifest of [false,true]){
+  const w=await workspace();
+  try{
+   await compileOresToWasm({...w,publication:"atomic",
+    ...(withManifest?{environment:"browser"}:{})});
+   const release=await readAtomicRelease(w.output);
+   const pointer=await readFile(w.output+".current.json");
+   const sealed=join(w.output+".releases",release.releaseSha256);
+   await chmod(sealed,0o700);
+   const rogue=join(sealed,"unsealed-sidecar.json");
+   await writeFile(rogue,'{"unsealedAuthority":true}');
+   await assert.rejects(readAtomicRelease(w.output),
+    /unexpected sealed release entry/);
+   // A publisher must also refuse to reuse a contaminated identical digest.
+   await assert.rejects(publishAtomicRelease({output:w.output,
+    wasm:release.wasm,manifest:release.manifest,provenance:release.provenance}),
+    /unexpected sealed release entry/);
+   assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+   await unlink(rogue);
+   assert.equal((await readAtomicRelease(w.output)).releaseSha256,release.releaseSha256);
+   const dangling=join(sealed,"unsealed-symlink");
+   await symlink(join(w.dir,"absent-target"),dangling);
+   await assert.rejects(readAtomicRelease(w.output),
+    /unexpected sealed release entry/);
+   await unlink(dangling);
+   assert.equal((await readAtomicRelease(w.output)).releaseSha256,release.releaseSha256);
+  }finally{await cleanup(w.dir)}
+ }
+});
