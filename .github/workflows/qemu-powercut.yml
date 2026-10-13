@@ -27,23 +27,46 @@ jobs:
           set -euo pipefail
           read -r -a packages <<< "$(python3 scripts/verify-native-toolchain-lock.py install-args clang lld)"
           sudo apt-get update
+          # Pin to a deliberately small reviewed set of Ubuntu 24.04 GA-kernel
+          # builds. Ubuntu apt mirrors remove older versions; never silently
+          # admit an arbitrary latest/HWE kernel or reuse the host runner kernel.
+          available="$(apt-cache madison linux-image-virtual | awk -F '|' '{gsub(/^ +| +$/, "", $2); print $2}')"
+          kernel_package_version=""
+          for candidate in 6.8.0-146.146 6.8.0-139.139; do
+            if printf '%s\\n' "$available" | grep -Fxq "$candidate"; then
+              kernel_package_version="$candidate"
+              break
+            fi
+          done
+          if [ -z "$kernel_package_version" ]; then
+            printf 'No reviewed QEMU guest-kernel pin available in apt:\\n%s\\n' "$available" >&2
+            exit 1
+          fi
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             "${packages[@]}" qemu-system-x86 busybox-static e2fsprogs \
-            'linux-image-virtual=6.8.0-146.146'
+            "linux-image-virtual=$kernel_package_version"
           python3 scripts/verify-native-toolchain-lock.py verify clang lld
-          test -s /boot/vmlinuz-6.8.0-146-generic
-          test -s /boot/initrd.img-6.8.0-146-generic
+          test "$(dpkg-query -W -f='${Version}' linux-image-virtual)" = "$kernel_package_version"
+          # linux-image-virtual=6.8.0-N.N installs vmlinuz-6.8.0-N-generic.
+          guest_kernel="${kernel_package_version%.*}-generic"
+          test -s "/boot/vmlinuz-$guest_kernel"
+          test -s "/boot/initrd.img-$guest_kernel"
+          echo "QEMU_KERNEL_APT_PACKAGE=linux-image-virtual=$kernel_package_version"
+          echo "QEMU_KERNEL_VERSION=$guest_kernel"
+          # The initramfs is runner-built and not an immutable Ubuntu package.
+          # Persist its exact name and hash for this checkout/run's evidence.
+          echo "QEMU_INITRD_PATH=/boot/initrd.img-$guest_kernel" >> "$GITHUB_ENV"
           # Ubuntu kernel files are root-readonly (0600).
-          sudo cp /boot/vmlinuz-6.8.0-146-generic "$RUNNER_TEMP/ores-qemu-vmlinuz"
+          sudo cp "/boot/vmlinuz-$guest_kernel" "$RUNNER_TEMP/ores-qemu-vmlinuz"
           sudo chmod 0644 "$RUNNER_TEMP/ores-qemu-vmlinuz"
           echo "QEMU_KERNEL_SHA256=$(sha256sum "$RUNNER_TEMP/ores-qemu-vmlinuz" | cut -d' ' -f1)"
-          echo "QEMU_INITRD_SHA256=$(sha256sum /boot/initrd.img-6.8.0-146-generic | cut -d' ' -f1)"
+          echo "QEMU_INITRD_SHA256=$(sha256sum "/boot/initrd.img-$guest_kernel" | cut -d' ' -f1)"
       - name: Verify five single-publisher and two multi-publisher abrupt VM cold boots
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/qemu-powercut-harness.py \
-            "$RUNNER_TEMP/ores-qemu-vmlinuz" /boot/initrd.img-6.8.0-146-generic
+            "$RUNNER_TEMP/ores-qemu-vmlinuz" "$QEMU_INITRD_PATH"
           python3 -m json.tool build/qemu-powercut-evidence.json > /dev/null
           python3 - <<'PY'
           import json,pathlib,subprocess
