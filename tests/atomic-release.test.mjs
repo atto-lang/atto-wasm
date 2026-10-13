@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
+import {Stats} from "node:fs";
 import {spawn,spawnSync} from "node:child_process";
 import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename,symlink,unlink,link} from "node:fs/promises";
 import {tmpdir} from "node:os";
@@ -1545,5 +1546,36 @@ test("native Wasm snapshot ignores inherited typed-array length traps",async()=>
    "copy must not consult inherited length on untrusted-backing native view");
   assert.equal((await readAtomicRelease(w.output)).releaseSha256,result.releaseSha256);
   assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("filesystem admission ignores poisoned Stats predicates and rejects symlinked roots",
+ {timeout:45000},async()=>{
+ const w=await workspace();
+ try{
+  const baseline=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const alias=join(w.dir,"symlinked-output.wasm");
+  await symlink(w.output+".releases",alias+".releases","dir");
+  await writeFile(alias+".current.json",await readFile(w.output+".current.json"));
+  const methods=["isDirectory","isSymbolicLink","isFile"];
+  const originals=methods.map(name=>Object.getOwnPropertyDescriptor(Stats.prototype,name));
+  let callbacks=0,verified,bad;
+  try{
+   for(const name of methods)Object.defineProperty(Stats.prototype,name,{
+    configurable:true,writable:true,
+    value(){callbacks++;return name!=="isSymbolicLink"}
+   });
+   verified=await readAtomicRelease(w.output);
+   try{await readAtomicRelease(alias)}catch(error){bad=error}
+  }finally{
+   for(let i=0;i<methods.length;i++){
+    if(originals[i])Object.defineProperty(Stats.prototype,methods[i],originals[i]);
+    else delete Stats.prototype[methods[i]];
+   }
+  }
+  assert.equal(verified.releaseSha256,baseline.releaseSha256);
+  assert.match(String(bad?.message),/invalid release root/);
+  assert.equal(callbacks,0,"release verifier must inspect native stat.mode, not inherited methods");
  }finally{await cleanup(w.dir)}
 });
