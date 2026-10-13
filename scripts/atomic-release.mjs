@@ -280,7 +280,7 @@ function descriptorFor(wasm,manifest,provenance){
 async function verifyDir(dir,id){
  if(!hex(id))fail("invalid identity");
  const st=await lstat(dir);
- if(!isPrivateDirectory(st))fail("release is not a private directory");
+ if(!isPrivateDirectory(st))fail("release is not a real directory or has unsafe permissions");
  const seal=parseCanonicalSeal(await safeFile(join(dir,"seal.json"),16384));
  // A content-addressed release has a CLOSED on-disk namespace: hashes of
  // expected files do not authorize extra sidecars, executables or symlinks.
@@ -325,7 +325,7 @@ export async function readAtomicRelease(output){
  const {root,pointer}=paths(resolve(output));
  await requirePrivatePointerParent(pointer);
  const st=await lstat(root);
- if(!isPrivateDirectory(st))fail("invalid or unsafe release root");
+ if(!isPrivateDirectory(st))fail("invalid release root or unsafe permissions");
  const pointerBytes=await safeFile(pointer,16384);
  let p;
  try{p=parseUTF8JSON(pointerBytes)}
@@ -458,7 +458,7 @@ export async function inspectAtomicReleaseState(output){
  let entries;
  try{
   const stat=await lstat(root);
-  if(!isPrivateDirectory(stat))fail("invalid or unsafe release root");
+  if(!isPrivateDirectory(stat))fail("invalid release root or unsafe permissions");
   entries=await readdir(root,{withFileTypes:true});
  }catch(error){
   if(error?.code==="ENOENT")
