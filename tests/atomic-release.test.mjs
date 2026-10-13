@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
 import {spawnSync} from "node:child_process";
-import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename,symlink,unlink} from "node:fs/promises";
+import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename,symlink,unlink,link} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
@@ -1344,4 +1344,35 @@ test("verified sealed directories reject untracked sidecars and symlinks",async(
    assert.equal((await readAtomicRelease(w.output)).releaseSha256,release.releaseSha256);
   }finally{await cleanup(w.dir)}
  }
+});
+
+test("verified pointers and payloads reject external hard links",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  const pointer=w.output+".current.json";
+  const pointerBytes=await readFile(pointer);
+  const sealed=join(w.output+".releases",baseline.releaseSha256);
+  const entries=[pointer,join(sealed,"seal.json"),join(sealed,"guest.wasm"),
+   join(sealed,"provenance.json"),join(sealed,"artifact.json")];
+  for(let i=0;i<entries.length;i++){
+   const alias=join(w.dir,"outside-hard-link-"+i);
+   await link(entries[i],alias);
+   try{
+    await assert.rejects(readAtomicRelease(w.output),/invalid file/);
+    // A same-digest publisher must not reuse a release if one of its
+    // supposedly immutable payloads has an unsealed external inode alias.
+    if(i!==0){
+     await assert.rejects(publishAtomicRelease({output:w.output,
+      wasm:baseline.wasm,manifest:baseline.manifest,
+      provenance:baseline.provenance}),/invalid file/);
+    }
+    assert.deepEqual(await readFile(pointer),pointerBytes);
+   }finally{await unlink(alias)}
+   const verified=await readAtomicRelease(w.output);
+   assert.equal(verified.releaseSha256,baseline.releaseSha256,
+    "removing external alias restores valid sealed identity");
+  }
+ }finally{await cleanup(w.dir)}
 });
