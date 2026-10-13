@@ -1126,7 +1126,7 @@ test("canonical metadata encoder enforces exact aggregate UTF-8 byte budget",()=
 });
 
 
-test("two publishers interleaved before pointer rename select only complete identities",async()=>{
+test("two publishers interleaved before pointer rename select only complete identities",{timeout:90000},async()=>{
  const w=await workspace();
  let resumeFirst=()=>{};
  try{
@@ -1142,7 +1142,10 @@ test("two publishers interleaved before pointer rename select only complete iden
    provenance:provenanceA,
    __testBeforePointerRename:async()=>{entered();await releaseBarrier}
   });
-  await atBarrier;
+  await Promise.race([atBarrier,a.then(
+   ()=>{throw Error("writer A completed before its pre-rename checkpoint")},
+   error=>{throw Error("writer A failed before its pre-rename checkpoint",{cause:error})}
+  )]);
   assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256,
    "a fully installed but unselected release must remain invisible to readers");
   const b=await publishAtomicRelease({output:w.output,wasm:baseline.wasm,
@@ -1164,7 +1167,7 @@ test("two publishers interleaved before pointer rename select only complete iden
  }finally{resumeFirst();await cleanup(w.dir)}
 });
 
-test("uncertain writer cannot claim current pointer after competing writer wins",async()=>{
+test("uncertain writer cannot claim current pointer after competing writer wins",{timeout:90000},async()=>{
  const w=await workspace();
  let resumeFirst=()=>{};
  try{
@@ -1184,7 +1187,9 @@ test("uncertain writer cannot claim current pointer after competing writer wins"
     throw Error("simulated uncertain pointer-parent sync")
    }
   }).then(()=>({unexpectedSuccess:true}),error=>({error}));
-  await afterRename;
+  await Promise.race([afterRename,resultA.then(({error})=>{
+   throw Error("writer A finished without reaching its post-rename checkpoint",{cause:error});
+  })]);
   const selectedA=await readAtomicRelease(w.output);
   assert.equal(selectedA.provenance.note,provenanceA.note,
    "writer A must have made its release visible");
