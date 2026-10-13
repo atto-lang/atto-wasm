@@ -1454,3 +1454,40 @@ test("independent processes racing as publishers and readers never select partia
   await cleanup(w.dir);
  }
 });
+
+
+test("sealed release read ignores post-import poisoned Buffer factory and methods",
+ {timeout:45000},async()=>{
+ const w=await workspace();
+ try{
+  const baseline=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const moduleURL=new URL("../scripts/atomic-release.mjs",import.meta.url).href;
+  const childSource=[
+   "import {readAtomicRelease} from "+JSON.stringify(moduleURL)+";",
+   "import {Buffer} from 'node:buffer';",
+   "const output="+JSON.stringify(w.output)+";",
+   "const original={",
+   " from:Buffer.from,allocUnsafe:Buffer.allocUnsafe,concat:Buffer.concat,",
+   " subarray:Buffer.prototype.subarray,equals:Buffer.prototype.equals,",
+   " toString:Buffer.prototype.toString};",
+   "let callbacks=0,identity=null;",
+   "const poison=()=>{callbacks++;throw Error('mutable Buffer operation invoked')};",
+   "try{",
+   " for(const name of ['from','allocUnsafe','concat'])Buffer[name]=poison;",
+   " for(const name of ['subarray','equals','toString'])Buffer.prototype[name]=poison;",
+   " const verified=await readAtomicRelease(output);",
+   " identity=verified.releaseSha256;",
+   "}finally{",
+   " for(const name of ['from','allocUnsafe','concat'])Buffer[name]=original[name];",
+   " for(const name of ['subarray','equals','toString'])Buffer.prototype[name]=original[name];",
+   "}",
+   "if(callbacks!==0)throw Error('poisoned Buffer callback invoked: '+callbacks);",
+   "process.stdout.write(identity+'\\n');"
+  ].join("\n");
+  const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
+   {encoding:"utf8",timeout:30000});
+  assert.equal(child.status,0,"sealed reader used poisoned methods: "+String(child.stderr));
+  assert.equal(child.stdout.trim(),baseline.releaseSha256);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
+ }finally{await cleanup(w.dir)}
+});
