@@ -19,7 +19,6 @@ const intrinsicApply=Reflect.apply;
 // Capture Buffer operations before any post-import prototype or static-method
 // mutation; never allow a replaced .subarray/.concat/.equals to forge bytes.
 const intrinsicBufferFrom=Buffer.from;
-const intrinsicBufferConcat=Buffer.concat;
 const intrinsicBufferAllocUnsafe=Buffer.allocUnsafe;
 const intrinsicBufferSubarray=Buffer.prototype.subarray;
 const intrinsicBufferEquals=Buffer.prototype.equals;
@@ -160,17 +159,22 @@ async function safeFile(path,limit){
   // covered by the sealed namespace. Reject before interpreting any bytes.
   if(!stat.isFile()||stat.size>limit||stat.nlink!==1)
    fail("invalid file");
-  const chunks=[];
-  let length=0;
-  for(;;){
-   const chunk=intrinsicApply(intrinsicBufferAllocUnsafe,Buffer,[Math.min(65536,limit+1-length)]);
-   const {bytesRead}=await handle.read(chunk,0,chunk.length,null);
-   if(bytesRead===0)break;
-   length+=bytesRead;
-   if(length>limit)fail("oversized file");
-   chunks[chunks.length]=intrinsicApply(intrinsicBufferSubarray,chunk,[0,bytesRead]);
+  // Read exactly the fstat-observed byte count into a single bounded
+  // allocation. Buffer.concat indirectly calls mutable Buffer.allocUnsafe,
+  // even if the concat function was captured before prototype pollution.
+  // Detect a concurrently shrunk or extended file instead of hashing a
+  // partial snapshot that differs from the checked inode size.
+  const bytes=intrinsicApply(intrinsicBufferAllocUnsafe,Buffer,[stat.size]);
+  let offset=0;
+  while(offset<stat.size){
+   const {bytesRead}=await handle.read(bytes,offset,stat.size-offset,null);
+   if(bytesRead===0)fail("file size changed during verification");
+   offset+=bytesRead;
   }
-  return intrinsicApply(intrinsicBufferConcat,Buffer,[chunks,length]);
+  const extra=intrinsicApply(intrinsicBufferAllocUnsafe,Buffer,[1]);
+  const trailing=await handle.read(extra,0,1,null);
+  if(trailing.bytesRead!==0)fail("file size changed during verification");
+  return intrinsicApply(intrinsicBufferSubarray,bytes,[0,offset]);
  }finally{await handle.close()}
 }
 // Verify the exact bytes before interpreting the seal. Unlike JSON.parse,
