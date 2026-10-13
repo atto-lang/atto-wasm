@@ -2,6 +2,7 @@
  * Small, bounded reader for the pieces of core Wasm required to enforce
  * loader policy. This is *not* a general Wasm parser or execution sandbox.
  */
+import {isSharedArrayBuffer,isProxy} from "node:util/types";
 // Inspect owned native byte views, never caller-overridable properties,
 // iterators, static Uint8Array.from, or prototype-dependent instanceof checks.
 const intrinsicApply=Reflect.apply;
@@ -42,6 +43,11 @@ export function inspectWasmBytes(input,{maxModuleBytes=1048576,maxMemoryPages=32
    }catch{throw new TypeError("expected a Wasm ArrayBuffer or typed array")}
   }
  }
+ // SharedArrayBuffer contents can be changed by another worker during
+ // the copy, making one byte snapshot inconsistent even with native getters.
+ // ArrayBuffer.isView() and public .buffer accessors do not provide this proof.
+ if(isProxy(input)||isSharedArrayBuffer(backing))
+  throw new TypeError("shared or proxy-backed Wasm input cannot be snapshotted safely");
  if(size>maxModuleBytes)throw new Error("Wasm module exceeds maximum byte size");
  // Copy exactly the native backing-view bytes, without consulting mutable
  // Symbol.iterator, Buffer/typed-array getters, or Uint8Array.from.
