@@ -28,6 +28,7 @@ CHECKPOINTS=(
  "__testAfterPointerRename",
  "__testBeforeCleanup",
 )
+MULTI_CHECKPOINTS=("multi2","multi3")
 MAX_LOG=1024*1024
 
 def sha256(path):
@@ -68,6 +69,7 @@ def create_guest_tree(root):
  for filename in ("atomic-release.mjs","core-i64-abi.mjs","inspect-core-memory.mjs"):
   shutil.copy2(ROOT/"scripts"/filename,root/"workspace/scripts"/filename)
  shutil.copy2(ROOT/"scripts/qemu-fault-guest.mjs",root/"workspace/qemu-fault-guest.mjs")
+ shutil.copy2(ROOT/"scripts/qemu-multiwriter-guest.mjs",root/"workspace/qemu-multiwriter-guest.mjs")
  init="""#!/bin/sh
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sys /sys
@@ -118,7 +120,7 @@ def validate_cold_boot_receipt(serial_output,checkpoint,returncode):
  if len(markers)!=1:
   raise RuntimeError("cold-boot verification receipt missing or repeated")
  wanted=prefix+re.escape(checkpoint)
- match=re.fullmatch(wanted+r" value=(42|43) identity=([0-9a-f]{64})",markers[0])
+ match=re.fullmatch(wanted+r" value=(42|43|45) identity=([0-9a-f]{64})",markers[0])
  if not match:
   raise RuntimeError("malformed cold-boot recovery receipt")
  value=int(match.group(1))
@@ -127,7 +129,11 @@ def validate_cold_boot_receipt(serial_output,checkpoint,returncode):
   raise RuntimeError("pre-rename receipt selected wrong release")
  if checkpoint=="__testBeforeCleanup" and value!=43:
   raise RuntimeError("post-commit receipt selected wrong release")
- if checkpoint not in CHECKPOINTS:
+ if checkpoint=="multi2" and value!=43:
+  raise RuntimeError("two-publisher recovery selected wrong release")
+ if checkpoint=="multi3" and value not in (43,45):
+  raise RuntimeError("three-publisher recovery selected wrong release")
+ if checkpoint not in CHECKPOINTS+MULTI_CHECKPOINTS:
   raise RuntimeError("unsupported cold-boot checkpoint")
  if returncode!=0:
   raise RuntimeError("QEMU cold-boot exited abnormally: "+str(returncode))
@@ -139,7 +145,8 @@ def validate_cold_boot_receipt(serial_output,checkpoint,returncode):
 
 
 def boot_until(kernel,initrd,disk,mode,checkpoint):
- wanted=("GUEST_POWER_CUT_BOUNDARY " if mode=="publish" else
+ wanted=(("GUEST_POWER_CUT_BOUNDARY " if mode=="publish" else
+         "GUEST_MULTIWRITER_CUT_READY ") if mode.startswith("publish") else
          "GUEST_COLD_BOOT_RECOVERY_OK ")+checkpoint
  cmd=qemu_command(kernel,initrd,disk,mode,checkpoint)
  process=subprocess.Popen(cmd,stdin=subprocess.DEVNULL,
@@ -161,7 +168,7 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
     output=(output+data)[-MAX_LOG:]
     if wanted.encode() in output:
      success=True
-     if mode=="publish":
+     if mode.startswith("publish"):
       # QEMU process dies abruptly. Do NOT issue ACPI poweroff, sync, a
       # guest SIGKILL, or a graceful monitor quit command.
       os.killpg(process.pid,signal.SIGKILL)
@@ -171,7 +178,7 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
   if not success:
    raise RuntimeError("QEMU did not reach "+wanted+
      "; guest serial tail:\n"+output.decode(errors="replace")[-6000:])
-  if mode=="verify":
+  if mode.startswith("verify"):
    try:
     tail,_=process.communicate(timeout=15)
    except subprocess.TimeoutExpired as error:
@@ -180,7 +187,7 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
    receipt=validate_cold_boot_receipt(
      output.decode(errors="replace"),checkpoint,process.returncode)
    print("QEMU_VALIDATED_GUEST_RECEIPT",receipt,flush=True)
-  print(("QEMU_UNCLEAN_POWER_CUT" if mode=="publish" else
+  print(("QEMU_UNCLEAN_POWER_CUT" if mode.startswith("publish") else
          "QEMU_COLD_BOOT_RECOVERY_VERIFIED"),checkpoint,flush=True)
  finally:
   if process.poll() is None:
@@ -190,9 +197,10 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
  return output.decode(errors="replace")
 
 def main():
- if len(sys.argv)!=3:
-  raise SystemExit("usage: qemu-powercut-harness.py KERNEL INITRD")
- kernel,initrd=map(Path,sys.argv[1:])
+ if len(sys.argv) not in (3,4) or (len(sys.argv)==4 and sys.argv[3]!="--multi-only"):
+  raise SystemExit("usage: qemu-powercut-harness.py KERNEL INITRD [--multi-only]")
+ kernel,initrd=map(Path,sys.argv[1:3])
+ multi_only=len(sys.argv)==4
  if not kernel.is_file() or not initrd.is_file():
   raise SystemExit("missing verified guest kernel/initrd")
  print("QEMU_KERNEL_SHA256",sha256(kernel),flush=True)
@@ -204,17 +212,18 @@ def main():
   root=base/"root"
   create_guest_tree(root)
   passed=[]
-  for hook in CHECKPOINTS:
+  for hook in (MULTI_CHECKPOINTS if multi_only else CHECKPOINTS):
    disk=base/(hook+".img")
    disk_image(root,disk)
-   boot_until(kernel,initrd,disk,"publish",hook)
-   boot_until(kernel,initrd,disk,"verify",hook)
+   boot_until(kernel,initrd,disk,"publish-multi" if multi_only else "publish",hook)
+   boot_until(kernel,initrd,disk,"verify-multi" if multi_only else "verify",hook)
    disk.unlink()
    passed.append(hook)
    print("QEMU_POWER_CUT_CASE_PASS",hook,flush=True)
  evidence={
   "schemaVersion":1,
-  "kind":"oreslang.qemu-ext4-unclean-powercut-recovery-v1",
+  "kind":("oreslang.qemu-ext4-multiwriter-recovery-v1" if multi_only else
+          "oreslang.qemu-ext4-unclean-powercut-recovery-v1"),
   "sourceTree":subprocess.check_output(["git","rev-parse","HEAD^{tree}"],
                                     cwd=ROOT,text=True).strip(),
   "sourceCommit":subprocess.check_output(["git","rev-parse","HEAD"],
@@ -229,11 +238,13 @@ def main():
   "checkpoints":passed,
   "limitations":"QEMU process kill is not host hardware power loss or controller cache test"
  }
- path=ROOT/"build/qemu-powercut-evidence.json"
+ path=ROOT/("build/qemu-multiwriter-evidence.json" if multi_only else
+             "build/qemu-powercut-evidence.json")
  path.parent.mkdir(parents=True,exist_ok=True)
  path.write_text(json.dumps(evidence,sort_keys=True,indent=2)+"\n")
  print("QEMU_POWER_CUT_EVIDENCE_SHA256",sha256(path),flush=True)
- print("QEMU_POWER_CUT_MATRIX_PASS",len(CHECKPOINTS),flush=True)
+ print("QEMU_MULTIWRITER_MATRIX_PASS" if multi_only else
+       "QEMU_POWER_CUT_MATRIX_PASS",len(passed),flush=True)
 
 if __name__=="__main__":
  main()
