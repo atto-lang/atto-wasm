@@ -86,3 +86,62 @@ test("compiler bridge resists poisoned native SHA-256 prototype methods",{timeou
   assert.equal(WebAssembly.validate(wasm),true);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
+
+test("bridge native ABI admission resists poisoned WebAssembly, Buffer and Stats",{timeout:45000},async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"oreslang-admission-bridge-"));
+ try{
+  const compiler=join(dir,"compiler.sh"),source=join(dir,"main.ores");
+  const output=join(dir,"guest.wasm");
+  const script="#!/bin/sh\nprintf 'target triple = \"wasm32-unknown-unknown\"\\ndefine i64 @main() { ret i64 42 }\\n'\n";
+  await writeFile(compiler,script,{mode:0o700});
+  await chmod(compiler,0o700);
+  await writeFile(source,"pub fnc main(): int { return 42; }\n");
+  const pin=hash(await readFile(compiler));
+  const bridgeURL=new URL("../scripts/compile-ores.mjs",import.meta.url).href;
+  const lines=[
+   "import {compileOresToWasm} from "+JSON.stringify(bridgeURL)+";",
+   "import {Stats} from 'node:fs';",
+   "import {Buffer} from 'node:buffer';",
+   "const actualModule=WebAssembly.Module;",
+   "const oldModule=Object.getOwnPropertyDescriptor(WebAssembly,'Module');",
+   "const oldValidate=Object.getOwnPropertyDescriptor(WebAssembly,'validate');",
+   "const oldImports=Object.getOwnPropertyDescriptor(actualModule,'imports');",
+   "const oldExports=Object.getOwnPropertyDescriptor(actualModule,'exports');",
+   "const oldBufferFrom=Object.getOwnPropertyDescriptor(Buffer,'from');",
+   "const oldIsFile=Object.getOwnPropertyDescriptor(Stats.prototype,'isFile');",
+   "let callbacks=0,result;",
+   "const poison=()=>{callbacks++;throw Error('mutable admission callback invoked')};",
+   "try{",
+   " Object.defineProperty(WebAssembly,'Module',{configurable:true,writable:true,value:poison});",
+   " Object.defineProperty(WebAssembly,'validate',{configurable:true,writable:true,value:poison});",
+   " Object.defineProperty(actualModule,'imports',{configurable:true,writable:true,value:poison});",
+   " Object.defineProperty(actualModule,'exports',{configurable:true,writable:true,value:poison});",
+   " Object.defineProperty(Stats.prototype,'isFile',{configurable:true,writable:true,value:poison});",
+   " Object.defineProperty(Buffer,'from',{configurable:true,writable:true,",
+   "  value:function(value,...args){",
+   "   if(typeof value==='string'&&value.includes('target triple'))return poison();",
+   "   return Reflect.apply(oldBufferFrom.value,Buffer,[value,...args]);",
+   "  }});",
+   " result=await compileOresToWasm({compiler:"+JSON.stringify(compiler)+",",
+   "  source:"+JSON.stringify(source)+",output:"+JSON.stringify(output)+",",
+   "  compilerSha256:"+JSON.stringify(pin)+",publication:'atomic',environment:'browser'});",
+   "}finally{",
+   " Object.defineProperty(WebAssembly,'Module',oldModule);",
+   " Object.defineProperty(WebAssembly,'validate',oldValidate);",
+   " Object.defineProperty(actualModule,'imports',oldImports);",
+   " Object.defineProperty(actualModule,'exports',oldExports);",
+   " Object.defineProperty(Buffer,'from',oldBufferFrom);",
+   " Object.defineProperty(Stats.prototype,'isFile',oldIsFile);",
+   "}",
+   "if(callbacks!==0)throw Error('poisoned native admission invoked: '+callbacks);",
+   "process.stdout.write(result.wasmSha256+'\\n');"
+  ].join("\n");
+  const child=spawnSync(process.execPath,["--input-type=module","--eval",lines],
+   {encoding:"utf8",timeout:30000});
+  assert.equal(child.status,0,"bridge dispatched mutable ABI methods: "+String(child.stderr));
+  const id=JSON.parse(await readFile(output+".current.json","utf8")).releaseSha256;
+  const wasm=await readFile(join(output+".releases",id,"guest.wasm"));
+  assert.equal(child.stdout.trim(),hash(wasm));
+  assert.equal((new WebAssembly.Instance(new WebAssembly.Module(wasm))).exports.main(),42n);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
