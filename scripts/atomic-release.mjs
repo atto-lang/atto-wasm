@@ -13,10 +13,18 @@ const digest=b=>createHash("sha256").update(b).digest("hex");
 const hex=x=>typeof x==="string"&&/^[0-9a-f]{64}$/.test(x);
 // JSON Schema maxLength counts Unicode code points, not UTF-16 units.
 // Stop scanning at max+1; never allocate a second copy of caller text.
+const intrinsicCharCodeAt=String.prototype.charCodeAt;
 function boundedCodePoints(value,min,max){
  if(typeof value!=="string")return false;
  let n=0;
- for(const _codepoint of value)if(++n>max)return false;
+ for(let i=0;i<value.length;i++){
+  const ch=intrinsicCharCodeAt.call(value,i);
+  if(ch>=0xd800&&ch<=0xdbff&&i+1<value.length){
+   const low=intrinsicCharCodeAt.call(value,i+1);
+   if(low>=0xdc00&&low<=0xdfff)i++;
+  }
+  if(++n>max)return false;
+ }
  return n>=min;
 }
 const fail=x=>{throw Error("invalid atomic Oreslang release: "+x)};
@@ -60,7 +68,8 @@ export class AtomicReleaseCommitUncertainError extends Error {
  }
 }
 const paths=output=>({root:output+".releases",pointer:output+".current.json"});
-function canonical(x){
+// Closed descriptor-only encoder reused for legacy and atomic metadata.
+export function canonicalReleaseMetadata(x){
  function serialize(value,depth){
   if(depth>16)fail("canonical metadata nesting limit");
   if(value===null||typeof value==="string"||typeof value==="boolean"||
@@ -76,32 +85,37 @@ function canonical(x){
    if(!Number.isSafeInteger(length)||length<0||
       keys.length!==length+1||keys[keys.length-1]!=="length")
     fail("invalid canonical metadata array properties");
-   const entries=[];
+   let encoded="[";
    for(let i=0;i<length;i++){
     if(keys[i]!==String(i))fail("invalid canonical metadata array index");
     const item=Object.getOwnPropertyDescriptor(value,String(i));
     if(!item||!Object.hasOwn(item,"value")||!item.enumerable)
      fail("invalid canonical metadata array element");
-    entries.push(serialize(item.value,depth+1));
+    if(i!==0)encoded+=",";
+    encoded+=serialize(item.value,depth+1);
    }
-   return "["+entries.join(",")+"]";
+   return encoded+"]";
   }
-  if(![Object.prototype,null].includes(Object.getPrototypeOf(value)))
+  const prototype=Object.getPrototypeOf(value);
+  if(prototype!==Object.prototype&&prototype!==null)
    fail("invalid canonical metadata prototype");
   const keys=Object.keys(value);
   if(Reflect.ownKeys(value).length!==keys.length)
    fail("invalid canonical metadata hidden fields");
-  const fields=[];
-  for(const key of keys){
+  let encoded="{";
+  for(let i=0;i<keys.length;i++){
+   const key=keys[i];
    const descriptor=Object.getOwnPropertyDescriptor(value,key);
    if(!descriptor||!descriptor.enumerable||!Object.hasOwn(descriptor,"value"))
     fail("invalid canonical metadata field");
-   fields.push(JSON.stringify(key)+":"+serialize(descriptor.value,depth+1));
+   if(i!==0)encoded+=",";
+   encoded+=JSON.stringify(key)+":"+serialize(descriptor.value,depth+1);
   }
-  return "{"+fields.join(",")+"}";
+  return encoded+"}";
  }
  return Buffer.from(serialize(x,0)+String.fromCharCode(10));
 }
+const canonical=canonicalReleaseMetadata;
 // Array.length alone does not make an empty metadata array a closed record:
 // an own toJSON, symbol, non-enumerable capability or accessor would otherwise
 // be silently admitted and might be invoked by future code paths.
@@ -115,15 +129,26 @@ const exactEmptyArray=value=>Array.isArray(value)&&!isProxy(value)&&
 // accessor properties, not merely count enumerable names. In particular,
 // getters could otherwise return different values during validation and seal
 // serialization, producing inconsistent source-of-authority records.
-const exactKeys=(value,keys)=>value!==null&&typeof value==="object"&&
- !isProxy(value)&&!Array.isArray(value)&&
- [Object.prototype,null].includes(Object.getPrototypeOf(value))&&
- Reflect.ownKeys(value).length===keys.length&&
- keys.every(key=>{
-  const descriptor=Object.getOwnPropertyDescriptor(value,key);
-  return !!descriptor&&descriptor.enumerable===true&&
-    Object.hasOwn(descriptor,"value");
- });
+// Explicit loops avoid prototype-pollutable Array algorithms in admission.
+function exactKeys(value,keys){
+ if(value===null||typeof value!=="object"||isProxy(value)||Array.isArray(value))
+  return false;
+ const prototype=Object.getPrototypeOf(value);
+ if(prototype!==Object.prototype&&prototype!==null)return false;
+ if(Reflect.ownKeys(value).length!==keys.length)return false;
+ for(let i=0;i<keys.length;i++){
+  const descriptor=Object.getOwnPropertyDescriptor(value,keys[i]);
+  if(!descriptor||descriptor.enumerable!==true||
+     !Object.hasOwn(descriptor,"value"))return false;
+ }
+ return true;
+}
+function orderedKeys(value,keys){
+ const actual=Object.keys(value);
+ if(actual.length!==keys.length)return false;
+ for(let i=0;i<keys.length;i++)if(actual[i]!==keys[i])return false;
+ return true;
+}
 // Explicit Linux/POSIX durability barrier. On filesystems without directory
 // fsync support this fails closed rather than claiming persistence.
 async function fsyncDirectory(dir){
@@ -169,10 +194,10 @@ function parseCanonicalSeal(bytes){
  catch{fail("invalid release seal JSON")}
  if(!seal||typeof seal!=="object"||Array.isArray(seal)||
     !bytes.equals(canonical(seal))||
-    Object.keys(seal).join(",")!=="schemaVersion,type,fileHashes"||
+    !orderedKeys(seal,["schemaVersion","type","fileHashes"])||
     !seal.fileHashes||typeof seal.fileHashes!=="object"||
     Array.isArray(seal.fileHashes)||
-    Object.keys(seal.fileHashes).join(",")!=="wasm,manifest,provenance")
+    !orderedKeys(seal.fileHashes,["wasm","manifest","provenance"]))
    fail("noncanonical release seal");
  return seal;
 }
@@ -184,8 +209,8 @@ function descriptorFor(wasm,manifest,provenance){
       "importCount","clangVersion","note"])||
     provenance.kind!=="llvm-ores-to-wasm32-core-experimental"||
     provenance.schemaVersion!==1||
-    !["compilerSha256","sourceSha256","llvmIrSha256"].every(k=>
-      hex(provenance[k]))||!hex(provenance.wasmSha256)||
+    !hex(provenance.compilerSha256)||!hex(provenance.sourceSha256)||
+    !hex(provenance.llvmIrSha256)||!hex(provenance.wasmSha256)||
     !Number.isSafeInteger(provenance.wasmBytes)||provenance.wasmBytes!==wasm.length||
     typeof provenance.exportName!=="string"||
     !/^[A-Za-z_][A-Za-z0-9_]*$/.test(provenance.exportName)||
@@ -208,7 +233,8 @@ function descriptorFor(wasm,manifest,provenance){
    manifest.schemaVersion!==1||
    manifest.artifactType!=="oreslang.core-wasm.i64-v1"||
    manifest.target!=="wasm32"||manifest.backend!=="wasm"||
-   !["browser","edge-js","edge-wasi"].includes(manifest.environment)||
+   (manifest.environment!=="browser"&&manifest.environment!=="edge-js"&&
+     manifest.environment!=="edge-wasi")||
    typeof manifest.entry!=="string"||manifest.entry.length>128||
    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(manifest.entry)||
    manifest.entry!==provenance.exportName||
@@ -265,10 +291,9 @@ export async function readAtomicRelease(output){
  // Publisher emits a single canonical encoding. Reject duplicate JSON keys,
  // reordered fields or alternate encodings instead of trusting last-key-wins.
  if(!p||typeof p!=="object"||Array.isArray(p)||
-    Object.keys(p).join(",")!=="schemaVersion,releaseSha256"||
+    !orderedKeys(p,["schemaVersion","releaseSha256"])||
     !pointerBytes.equals(canonical(p)))fail("noncanonical current pointer");
- if(p.schemaVersion!==1||!hex(p.releaseSha256)||
-    Object.keys(p).sort().join(",")!=="releaseSha256,schemaVersion")
+ if(p.schemaVersion!==1||!hex(p.releaseSha256))
   fail("invalid current pointer");
  return verifyDir(join(root,p.releaseSha256),p.releaseSha256);
 }
@@ -314,7 +339,7 @@ export async function publishAtomicRelease({
   const destinationDir=join(root,releaseSha256);
   try{await rename(stage,destinationDir)}
   catch(error){
-   if(!["EEXIST","ENOTEMPTY"].includes(error.code))throw error;
+   if((error.code!=="EEXIST"&&error.code!=="ENOTEMPTY"))throw error;
   }
   // Reject preexisting conflicting/replaced content, even if name matches.
   await verifyDir(destinationDir,releaseSha256);

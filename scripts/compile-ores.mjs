@@ -10,7 +10,7 @@ import {dirname,resolve,isAbsolute,join,basename} from "node:path";
 import {fileURLToPath} from "node:url";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
 import {inspectWasmBytes} from "./inspect-core-memory.mjs";
-import {publishAtomicRelease} from "./atomic-release.mjs";
+import {publishAtomicRelease,canonicalReleaseMetadata} from "./atomic-release.mjs";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
 const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES=16*1024*1024;
@@ -35,7 +35,8 @@ async function rejectMixedPublication(published,publication){
  const conflicts=publication==="atomic"?
   [published,published+".artifact.json",published+".provenance.json"]:
   [published+".current.json",published+".releases"];
- for(const path of conflicts){
+ for(let i=0;i<conflicts.length;i++){
+   const path=conflicts[i];
   try{
    // lstat sees the directory entry itself, including dangling symlinks.
    // Following symlinks via stat() can report ENOENT for an occupied output
@@ -125,20 +126,22 @@ export async function compileOresToWasm({
  // A lexical resolve() comparison alone can overwrite compiler/source
  // inputs through an alternate symlinked parent directory.
  await mkdir(dirname(output),{recursive:true});
- const [sourcePath,compilerPath,outputParent]=await Promise.all([
-  realpath(source),realpath(compiler),realpath(dirname(output))
- ]);
+ const sourcePath=await realpath(source);
+  const compilerPath=await realpath(compiler);
+  const outputParent=await realpath(dirname(output));
  const published=join(outputParent,basename(output));
- const protectedInputs=new Set([sourcePath,compilerPath]);
- if(!["atomic","legacy"].includes(publication))throw Error("invalid artifact publication mode");
- for(const destination of [published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases",published+".publication.lock"]){
-  if(protectedInputs.has(destination))
+ // Literal pathname comparisons do not depend on a mutable Set/array iterator.
+ if(publication!=="atomic"&&publication!=="legacy")throw Error("invalid artifact publication mode");
+ const inputOverlapPaths=[published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases",published+".publication.lock"];
+  for(let i=0;i<inputOverlapPaths.length;i++){
+   const destination=inputOverlapPaths[i];
+   if(destination===sourcePath||destination===compilerPath)
    throw Error("output or artifact metadata path overlaps a compiler/source input");
  }
  if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(exportName))throw Error("unsupported export name");
  // Preflight before readFile() to avoid allocating attacker-sized compiler
  // binaries or source buffers, then check the lengths again after reading.
- const [sourceStat,compilerStat]=await Promise.all([stat(sourcePath),stat(compilerPath)]);
+ const sourceStat=await stat(sourcePath),compilerStat=await stat(compilerPath);
  if(!sourceStat.isFile()||sourceStat.size>MAX_SOURCE_BYTES)
   throw Error("source exceeds 1 MiB compiler bridge budget or is not a regular file");
  if(!compilerStat.isFile()||compilerStat.size>MAX_COMPILER_BYTES)
@@ -146,21 +149,24 @@ export async function compileOresToWasm({
  // A destination that already exists might itself be a symlink or hard link
  // to an input. Reject by inode identity before publishing over the link.
  // Merely canonicalizing its parent directory does not catch this case.
- for(const destination of [published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases"]){
+ const existingOutputPaths=[published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases"];
+  for(let i=0;i<existingOutputPaths.length;i++){
+   const destination=existingOutputPaths[i];
   try{
    const existing=await stat(destination);
-   if([sourceStat,compilerStat].some(input=>
-      input.dev===existing.dev&&input.ino===existing.ino))
+   if(((sourceStat.dev===existing.dev&&sourceStat.ino===existing.ino)||
+       (compilerStat.dev===existing.dev&&compilerStat.ino===existing.ino)))
     throw Error("output or artifact metadata path overlaps a compiler/source input");
   }catch(error){if(error?.code!=="ENOENT")throw error}
  }
  await rejectMixedPublication(published,publication);
- const [sourceBytes,compilerBytes]=await Promise.all([readFile(sourcePath),readFile(compilerPath)]);
+ const sourceBytes=await readFile(sourcePath),compilerBytes=await readFile(compilerPath);
  if(sourceBytes.length>MAX_SOURCE_BYTES)throw Error("source exceeds 1 MiB compiler bridge budget");
  if(compilerBytes.length>MAX_COMPILER_BYTES)throw Error("compiler exceeds 256 MiB executable budget");
  const actualCompilerHash=sha(compilerBytes);
  if(compilerSha256!==undefined&&compilerSha256!==actualCompilerHash)throw Error("compiler binary SHA-256 does not match pinned hash");
- if(environment!==undefined&&!["browser","edge-js","edge-wasi"].includes(environment))
+ if(environment!==undefined&&environment!=="browser"&&
+     environment!=="edge-js"&&environment!=="edge-wasi")
   throw Error("unsupported portable host environment");
  // Compile exactly the already-hashed source snapshot, not a mutable path.
  // The current scalar subset supports standalone source files; relative
@@ -207,8 +213,14 @@ export async function compileOresToWasm({
  rejectStartSection(wasm);
  const module=new WebAssembly.Module(wasm);
  const imports=WebAssembly.Module.imports(module);
- if(imports.length)throw Error("guest Wasm unexpectedly imports host modules: "+imports.map(x=>x.module+"."+x.name).join(","));
- if(!WebAssembly.Module.exports(module).some(x=>x.name===exportName&&x.kind==="function"))throw Error("guest Wasm missing requested export");
+ if(imports.length)throw Error("guest Wasm unexpectedly imports host modules");
+ let foundExport=false;
+  const exported=WebAssembly.Module.exports(module);
+  for(let i=0;i<exported.length;i++){
+   const item=exported[i];
+   if(item.name===exportName&&item.kind==="function"){foundExport=true;break}
+  }
+  if(!foundExport)throw Error("guest Wasm missing requested export");
  assertCoreI64Entry(wasm,exportName);
  // The artifact manifest advertises an exact 2-page memory maximum. Check
  // the binary rather than relying on Clang flags or its version string.
@@ -233,9 +245,9 @@ export async function compileOresToWasm({
    producer:{compilerSha256:actualCompilerHash,
      sourceSha256:sha(sourceBytes),llvmIrSha256:sha(Buffer.from(ir,"utf8"))}
   };
-  await writeFile(join(scratch,"artifact.json"),JSON.stringify(manifest,null,2)+"\n");
+  await writeFile(join(scratch,"artifact.json"),canonicalReleaseMetadata(manifest));
  }
- await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
+ await writeFile(join(scratch,"provenance.json"),canonicalReleaseMetadata(record));
  completedResult=await withPublicationLock(published,publication,async()=>{
  if(publication==="atomic"){
   // The content-addressed release is privately staged and sealed first.
@@ -288,6 +300,6 @@ if(calledFromCli){
    exportName:options.export||"main",clang:options.clang||process.env.CLANG||"clang",
    compilerSha256:options["compiler-sha256"],environment:options.environment,publication:options.publication||"legacy"
   });
-  console.log(JSON.stringify(record,null,2));
+  process.stdout.write(canonicalReleaseMetadata(record));
  }catch(error){console.error(error.stack||error.message);process.exitCode=1}
 }

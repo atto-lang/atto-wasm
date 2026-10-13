@@ -923,3 +923,141 @@ test("canonical sealed bytes never invoke inherited toJSON hooks",async()=>{
   await cleanup(w.dir);
  }
 });
+
+
+test("array prototype pollution cannot alter canonical release checks or digests",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const prior=await readAtomicRelease(w.output);
+  const descriptors=["join","every","includes"].map(key=>
+   Object.getOwnPropertyDescriptor(Array.prototype,key));
+  const methods=["join","every","includes"];
+  let invoked=0,good,badEnvironment,badCompiler;
+  try{
+   // Historically join could forge serialized bytes, includes could admit
+   // unauthorized environment strings and every could skip SHA validation.
+   const replacements=[
+    function(){invoked++;return "FORGED_CANONICAL_BYTES"},
+    function(){invoked++;return true},
+    function(){invoked++;return true}
+   ];
+   for(let i=0;i<methods.length;i++)
+    Object.defineProperty(Array.prototype,methods[i],{
+     configurable:true,writable:true,value:replacements[i]
+    });
+   good=await publishAtomicRelease({
+    output:w.output,wasm:prior.wasm,manifest:prior.manifest,
+    provenance:{...prior.provenance,note:"prototype algorithm hardening"}
+   });
+   await readAtomicRelease(w.output);
+   try{
+    await publishAtomicRelease({
+     output:w.output,wasm:prior.wasm,provenance:prior.provenance,
+     manifest:{...prior.manifest,environment:"not-an-allowed-host"}
+    });
+   }catch(error){badEnvironment=error}
+   try{
+    await publishAtomicRelease({
+     output:w.output,wasm:prior.wasm,manifest:prior.manifest,
+     provenance:{...prior.provenance,compilerSha256:"invalid"}
+    });
+   }catch(error){badCompiler=error}
+  }finally{
+   for(let i=0;i<methods.length;i++)
+    Object.defineProperty(Array.prototype,methods[i],descriptors[i]);
+  }
+  assert.match(good.releaseSha256,/^[0-9a-f]{64}$/);
+  assert.match(String(badEnvironment?.message),/inconsistent manifest provenance/);
+  assert.match(String(badCompiler?.message),/invalid producer record/);
+  assert.equal(invoked,0,"metadata code must not invoke inherited collection algorithms");
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,good.releaseSha256);
+ }finally{await cleanup(w.dir)}
+});
+
+test("Unicode metadata length is not controlled by String prototype iterators",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const prior=await readAtomicRelease(w.output);
+  const pointer=await readFile(w.output+".current.json");
+  const original=Object.getOwnPropertyDescriptor(String.prototype,Symbol.iterator);
+  let invoked=0,failure;
+  try{
+   Object.defineProperty(String.prototype,Symbol.iterator,{
+    configurable:true,writable:true,
+    value:function*(){invoked++;yield "x"}
+   });
+   try{
+    await publishAtomicRelease({
+     output:w.output,wasm:prior.wasm,manifest:prior.manifest,
+     provenance:{...prior.provenance,clangVersion:"x".repeat(257)}
+    });
+   }catch(error){failure=error}
+  }finally{
+   if(original)Object.defineProperty(String.prototype,Symbol.iterator,original);
+   else delete String.prototype[Symbol.iterator];
+  }
+  assert.match(String(failure?.message),/invalid producer record/);
+  assert.equal(invoked,0,"codepoint admission must not use caller-controlled iterators");
+  assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("compiler bridge fails closed under poisoned array admission predicates",async()=>{
+ const w=await workspace();
+ const {link,unlink}=await import("node:fs/promises");
+ const originalIncludes=Object.getOwnPropertyDescriptor(Array.prototype,"includes");
+ const originalSome=Object.getOwnPropertyDescriptor(Array.prototype,"some");
+ let calls=0,modeFailure,collisionFailure,environmentFailure;
+ try{
+  await link(w.source,w.output);
+  try{
+   Object.defineProperty(Array.prototype,"includes",{configurable:true,writable:true,
+    value(){calls++;return true}});
+   Object.defineProperty(Array.prototype,"some",{configurable:true,writable:true,
+    value(){calls++;return false}});
+   try{await compileOresToWasm({...w,publication:"unsupported"})}
+   catch(error){modeFailure=error}
+   try{await compileOresToWasm({...w,publication:"legacy"})}
+   catch(error){collisionFailure=error}
+   await unlink(w.output);
+   try{await compileOresToWasm({...w,publication:"atomic",environment:"evil-host"})}
+   catch(error){environmentFailure=error}
+  }finally{
+   Object.defineProperty(Array.prototype,"includes",originalIncludes);
+   Object.defineProperty(Array.prototype,"some",originalSome);
+  }
+  assert.match(String(modeFailure?.message),/invalid artifact publication mode/);
+  assert.match(String(collisionFailure?.message),/overlaps a compiler\/source input/);
+  assert.match(String(environmentFailure?.message),/unsupported portable host environment/);
+  assert.equal(calls,0,"compiler admission must not invoke inherited array predicates");
+  assert.equal(await readFile(w.source,"utf8"),"pub fnc main(): int { return 42; }\n");
+ }finally{await cleanup(w.dir)}
+});
+
+test("legacy metadata sidecars do not invoke inherited toJSON",async()=>{
+ const w=await workspace();
+ const before=Object.getOwnPropertyDescriptor(Object.prototype,"toJSON");
+ let invoked=0;
+ try{
+  try{
+   Object.defineProperty(Object.prototype,"toJSON",{configurable:true,
+    value(){invoked++;throw Error("forbidden inherited JSON serializer")}});
+   await compileOresToWasm({...w,publication:"legacy",environment:"browser"});
+  }finally{
+   if(before)Object.defineProperty(Object.prototype,"toJSON",before);
+   else delete Object.prototype.toJSON;
+  }
+  const record=JSON.parse(await readFile(w.output+".provenance.json","utf8"));
+  const manifest=JSON.parse(await readFile(w.output+".artifact.json","utf8"));
+  assert.equal(record.schemaVersion,1);
+  assert.equal(manifest.environment,"browser");
+  assert.equal(invoked,0);
+ }finally{
+  if(before)Object.defineProperty(Object.prototype,"toJSON",before);
+  else delete Object.prototype.toJSON;
+  await cleanup(w.dir);
+ }
+});
