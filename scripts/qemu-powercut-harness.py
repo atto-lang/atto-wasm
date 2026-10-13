@@ -28,6 +28,7 @@ CHECKPOINTS=(
  "__testAfterPointerRename",
  "__testBeforeCleanup",
 )
+MULTIWRITER_CASES=("multi2","multi3")
 MAX_LOG=1024*1024
 
 def sha256(path):
@@ -68,11 +69,16 @@ def create_guest_tree(root):
  for filename in ("atomic-release.mjs","core-i64-abi.mjs","inspect-core-memory.mjs"):
   shutil.copy2(ROOT/"scripts"/filename,root/"workspace/scripts"/filename)
  shutil.copy2(ROOT/"scripts/qemu-fault-guest.mjs",root/"workspace/qemu-fault-guest.mjs")
+ shutil.copy2(ROOT/"scripts/qemu-multiwriter-guest.mjs",root/"workspace/qemu-multiwriter-guest.mjs")
  init="""#!/bin/sh
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sys /sys
 /bin/busybox mount -t devtmpfs devtmpfs /dev
-/usr/bin/node /workspace/qemu-fault-guest.mjs
+if /bin/busybox grep -q "faultmode=multi-" /proc/cmdline; then
+  /usr/bin/node /workspace/qemu-multiwriter-guest.mjs
+else
+  /usr/bin/node /workspace/qemu-fault-guest.mjs
+fi
 result=$?
 if [ "$result" -ne 0 ]; then
   echo GUEST_PROCESS_ERROR=$result
@@ -118,17 +124,23 @@ def validate_cold_boot_receipt(serial_output,checkpoint,returncode):
  if len(markers)!=1:
   raise RuntimeError("cold-boot verification receipt missing or repeated")
  wanted=prefix+re.escape(checkpoint)
- match=re.fullmatch(wanted+r" value=(42|43) identity=([0-9a-f]{64})",markers[0])
+ match=re.fullmatch(wanted+r" value=(42|43|44|45) identity=([0-9a-f]{64})",markers[0])
  if not match:
   raise RuntimeError("malformed cold-boot recovery receipt")
  value=int(match.group(1))
+ if checkpoint not in CHECKPOINTS+MULTIWRITER_CASES:
+  raise RuntimeError("unsupported cold-boot checkpoint")
  if checkpoint in ("__testAfterReleaseRename","__testAfterReleaseInstall",
                    "__testBeforePointerRename") and value!=42:
   raise RuntimeError("pre-rename receipt selected wrong release")
  if checkpoint=="__testBeforeCleanup" and value!=43:
   raise RuntimeError("post-commit receipt selected wrong release")
- if checkpoint not in CHECKPOINTS:
-  raise RuntimeError("unsupported cold-boot checkpoint")
+ if checkpoint=="__testAfterPointerRename" and value not in (42,43):
+  raise RuntimeError("uncertain-commit receipt selected unrecognized release")
+ if checkpoint=="multi2" and value!=44:
+  raise RuntimeError("two-writer receipt selected wrong durable release")
+ if checkpoint=="multi3" and value!=45:
+  raise RuntimeError("three-writer receipt selected wrong durable release")
  if returncode!=0:
   raise RuntimeError("QEMU cold-boot exited abnormally: "+str(returncode))
  if any("GUEST_PROCESS_ERROR=" in line for line in lines):
@@ -139,7 +151,7 @@ def validate_cold_boot_receipt(serial_output,checkpoint,returncode):
 
 
 def boot_until(kernel,initrd,disk,mode,checkpoint):
- wanted=("GUEST_POWER_CUT_BOUNDARY " if mode=="publish" else
+ wanted=("GUEST_POWER_CUT_BOUNDARY " if mode.endswith("publish") else
          "GUEST_COLD_BOOT_RECOVERY_OK ")+checkpoint
  cmd=qemu_command(kernel,initrd,disk,mode,checkpoint)
  process=subprocess.Popen(cmd,stdin=subprocess.DEVNULL,
@@ -161,7 +173,7 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
     output=(output+data)[-MAX_LOG:]
     if wanted.encode() in output:
      success=True
-     if mode=="publish":
+     if mode.endswith("publish"):
       # QEMU process dies abruptly. Do NOT issue ACPI poweroff, sync, a
       # guest SIGKILL, or a graceful monitor quit command.
       os.killpg(process.pid,signal.SIGKILL)
@@ -171,7 +183,7 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
   if not success:
    raise RuntimeError("QEMU did not reach "+wanted+
      "; guest serial tail:\n"+output.decode(errors="replace")[-6000:])
-  if mode=="verify":
+  if mode.endswith("verify"):
    try:
     tail,_=process.communicate(timeout=15)
    except subprocess.TimeoutExpired as error:
@@ -180,7 +192,7 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
    receipt=validate_cold_boot_receipt(
      output.decode(errors="replace"),checkpoint,process.returncode)
    print("QEMU_VALIDATED_GUEST_RECEIPT",receipt,flush=True)
-  print(("QEMU_UNCLEAN_POWER_CUT" if mode=="publish" else
+  print(("QEMU_UNCLEAN_POWER_CUT" if mode.endswith("publish") else
          "QEMU_COLD_BOOT_RECOVERY_VERIFIED"),checkpoint,flush=True)
  finally:
   if process.poll() is None:
@@ -212,6 +224,15 @@ def main():
    disk.unlink()
    passed.append(hook)
    print("QEMU_POWER_CUT_CASE_PASS",hook,flush=True)
+  multi_passed=[]
+  for scenario in MULTIWRITER_CASES:
+   disk=base/(scenario+".img")
+   disk_image(root,disk)
+   boot_until(kernel,initrd,disk,"multi-publish",scenario)
+   boot_until(kernel,initrd,disk,"multi-verify",scenario)
+   disk.unlink()
+   multi_passed.append(scenario)
+   print("QEMU_MULTIPUBLISHER_COLD_BOOT_PASS",scenario,flush=True)
  evidence={
   "schemaVersion":1,
   "kind":"oreslang.qemu-ext4-unclean-powercut-recovery-v1",
@@ -227,6 +248,8 @@ def main():
   "uncleanHypervisorStops":len(passed),
   "verifiedColdBoots":len(passed),
   "checkpoints":passed,
+  "multiWriterCases":multi_passed,
+  "multiWriterColdBoots":len(multi_passed),
   "limitations":"QEMU process kill is not host hardware power loss or controller cache test"
  }
  path=ROOT/"build/qemu-powercut-evidence.json"
@@ -234,6 +257,7 @@ def main():
  path.write_text(json.dumps(evidence,sort_keys=True,indent=2)+"\n")
  print("QEMU_POWER_CUT_EVIDENCE_SHA256",sha256(path),flush=True)
  print("QEMU_POWER_CUT_MATRIX_PASS",len(CHECKPOINTS),flush=True)
+ print("QEMU_MULTIWRITER_MATRIX_PASS",len(multi_passed),flush=True)
 
 if __name__=="__main__":
  main()

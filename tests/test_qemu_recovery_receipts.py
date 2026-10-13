@@ -78,6 +78,26 @@ class QemuRecoveryReceiptTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"unsupported"):
             qemu.validate_cold_boot_receipt(transcript(invalid),invalid,0)
 
+    def test_two_and_three_writer_receipts_require_final_durable_release(self):
+        for checkpoint,value in (("multi2",44),("multi3",45)):
+            with self.subTest(checkpoint=checkpoint):
+                good=transcript(checkpoint).replace("value=43 ","value="+str(value)+" ")
+                self.assertIn("value="+str(value),qemu.validate_cold_boot_receipt(good,checkpoint,0))
+                for wrong in (42,43,44,45):
+                    if wrong==value:
+                        continue
+                    bad=transcript(checkpoint).replace("value=43 ","value="+str(wrong)+" ")
+                    with self.assertRaisesRegex(RuntimeError,"writer receipt"):
+                        qemu.validate_cold_boot_receipt(bad,checkpoint,0)
+
+    def test_multiwriter_receipt_still_requires_clean_guest_termination(self):
+        report=transcript("multi3").replace("value=43 ","value=45 ")
+        with self.assertRaisesRegex(RuntimeError,"did not complete"):
+            qemu.validate_cold_boot_receipt(
+                report.replace("GUEST_PROCESS_CLEAN_FINISH",""),"multi3",0)
+        with self.assertRaisesRegex(RuntimeError,"abnormally"):
+            qemu.validate_cold_boot_receipt(report,"multi3",137)
+
     def test_substring_and_console_echo_do_not_count(self):
         data="shell: echo GUEST_COLD_BOOT_RECOVERY_OK "+HOOK+" value=42\nGUEST_PROCESS_CLEAN_FINISH\n"
         with self.assertRaisesRegex(RuntimeError,"missing"):

@@ -54,3 +54,15 @@ jobs:
           fi
           grep -q "Invariant NoBlindReplay is violated" /tmp/unsafe-outcome.log || { cat /tmp/unsafe-outcome.log; exit 1; }
           echo "PASS: blind replay after uncertain post-rename fsync rejected by TLC"
+
+      - name: Bound three writers, two live/suspect reader pins and retention
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -deadlock -cleanup -config formal/RetentionLeases.cfg formal/RetentionLeases.tla
+      - name: Reject unfenced lease expiry collection with TLC counterexample
+        shell: bash
+        run: |
+          set -euo pipefail
+          if java -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -deadlock -cleanup -config formal/RetentionLeasesUnsafe.cfg formal/RetentionLeases.tla > /tmp/unsafe-retention.log 2>&1; then
+            echo "Unfenced GC model unexpectedly passed"; cat /tmp/unsafe-retention.log; exit 1
+          fi
+          grep -q "Invariant PinnedPresent is violated" /tmp/unsafe-retention.log || { cat /tmp/unsafe-retention.log; exit 1; }
+          echo "PASS: expired but unfenced reader pin blocks release reclamation"
