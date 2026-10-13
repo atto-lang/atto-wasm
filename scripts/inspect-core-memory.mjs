@@ -26,7 +26,12 @@ export function inspectWasmBytes(input,{maxModuleBytes=1048576,maxMemoryPages=32
  // execute Symbol.hasInstance/GetPrototypeOf hooks before brand checks.
  if(isProxy(input)||isSharedArrayBuffer(input))
   throw new TypeError("shared or proxy-backed Wasm input cannot be snapshotted safely");
- if(input instanceof WebAssembly.Module)throw new TypeError("precompiled WebAssembly.Module cannot be inspected: provide original bytes");
+ // Do not use `input instanceof WebAssembly.Module`: the public Module
+ // constructor and Symbol.hasInstance can be poisoned after import. The
+ // native ArrayBuffer getter and ArrayBuffer.isView brand checks below
+ // already reject compiled modules without touching attacker-controlled
+ // WebAssembly properties or invoking Symbol.hasInstance.
+
  let backing,offset=0,size;
  try{
   // Native byteLength getter rejects a forged ArrayBuffer prototype.
