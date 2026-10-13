@@ -1579,3 +1579,41 @@ test("filesystem admission ignores poisoned Stats predicates and rejects symlink
   assert.equal(callbacks,0,"release verifier must inspect native stat.mode, not inherited methods");
  }finally{await cleanup(w.dir)}
 });
+
+test("WebAssembly admission is invariant under post-import static method poisoning",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const previous=await readAtomicRelease(w.output);
+  const oldValidate=Object.getOwnPropertyDescriptor(WebAssembly,"validate");
+  const oldModule=Object.getOwnPropertyDescriptor(WebAssembly,"Module");
+  const realModule=WebAssembly.Module;
+  const oldImports=Object.getOwnPropertyDescriptor(realModule,"imports");
+  let callbacks=0,validPublication,invalidPublication;
+  const invalid=new Uint8Array(previous.wasm);
+  invalid[0]=0xff;
+  try{
+   Object.defineProperty(WebAssembly,"validate",{configurable:true,writable:true,
+    value(){callbacks++;return true}});
+   Object.defineProperty(realModule,"imports",{configurable:true,writable:true,
+    value(){callbacks++;return []}});
+   Object.defineProperty(WebAssembly,"Module",{configurable:true,writable:true,
+    value:function ForgedModule(){callbacks++;throw Error("forged module")}});
+   // Both admissions are synchronous until the first filesystem await.
+   validPublication=publishAtomicRelease({output:w.output,wasm:previous.wasm,
+    manifest:previous.manifest,
+    provenance:{...previous.provenance,note:"native Wasm static admission invariance"}});
+   invalidPublication=publishAtomicRelease({output:w.output,wasm:invalid,
+    manifest:previous.manifest,provenance:previous.provenance});
+  }finally{
+   Object.defineProperty(WebAssembly,"validate",oldValidate);
+   Object.defineProperty(WebAssembly,"Module",oldModule);
+   Object.defineProperty(realModule,"imports",oldImports);
+  }
+  await assert.rejects(invalidPublication,/invalid executable Wasm/);
+  const published=await validPublication;
+  assert.equal(callbacks,0,"admission may not consult post-import Wasm globals");
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,published.releaseSha256);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
