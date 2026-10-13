@@ -32,7 +32,7 @@ if((mode==="publish-multi"||mode==="verify-multi")&&
  });
  throw Error("publisher returned without host power cut");
 }
-if(mode==="verify"&&modes.has(checkpoint)){
+else if(mode==="verify"&&modes.has(checkpoint)){
  const result=await readAtomicRelease(output);
  const selected=result.releaseSha256;
  const val=new WebAssembly.Instance(new WebAssembly.Module(result.wasm)).exports.main();
