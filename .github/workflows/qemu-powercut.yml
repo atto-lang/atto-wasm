@@ -33,13 +33,13 @@ jobs:
           available="$(apt-cache madison linux-image-virtual | awk -F '|' '{gsub(/^ +| +$/, "", $2); print $2}')"
           kernel_package_version=""
           for candidate in 6.8.0-146.146 6.8.0-139.139; do
-            if printf '%s\\n' "$available" | grep -Fxq "$candidate"; then
+            if printf '%s\n' "$available" | grep -Fxq "$candidate"; then
               kernel_package_version="$candidate"
               break
             fi
           done
           if [ -z "$kernel_package_version" ]; then
-            printf 'No reviewed QEMU guest-kernel pin available in apt:\\n%s\\n' "$available" >&2
+            printf 'No reviewed QEMU guest-kernel pin available in apt:\n%s\n' "$available" >&2
             exit 1
           fi
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
