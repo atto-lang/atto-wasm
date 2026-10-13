@@ -460,3 +460,33 @@ test("primitive type rejection does not execute poisoned Set.prototype.has",asyn
  await assert.rejects(pending,/invalid type shape/);
  assert.equal(called,0);
 });
+
+test("owned byte copies and u8 admission ignore poisoned Uint8Array helpers",async()=>{
+ const message={variant:"Batch",fields:{
+  pair:["hi",5n],fixed:[true,false],items:["first"],
+  state:{variant:"None",value:null},blob:new Uint8Array([0,37,255])
+ }};
+ const baseline=await encodeMessage(contract,message);
+ const expected=await decodeMessage(contract,baseline);
+ const entries=[[Uint8Array.prototype,"set"],[Uint8Array,"from"],[Uint8Array,"of"]];
+ const originals=entries.map(([owner,key])=>Object.getOwnPropertyDescriptor(owner,key));
+ let callbacks=0,after,decoded;
+ const poison=()=>{callbacks++;throw Error("poisoned typed-array intrinsic executed");};
+ try{
+  for(let i=0;i<entries.length;i++){
+   const [owner,key]=entries[i];
+   Object.defineProperty(owner,key,{configurable:true,writable:true,value:poison});
+  }
+  after=await encodeMessage(contract,message);
+  decoded=await decodeMessage(contract,baseline);
+ }finally{
+  for(let i=entries.length-1;i>=0;i--){
+   const [owner,key]=entries[i];
+   if(originals[i])Object.defineProperty(owner,key,originals[i]);
+   else delete owner[key];
+  }
+ }
+ assert.equal(callbacks,0,"hostile Uint8Array helpers must never run");
+ assert.deepEqual(after,baseline,"encoded bytes must be stable under poisoning");
+ assert.deepEqual(decoded,expected,"owned decoded byte buffers must be unchanged");
+});
