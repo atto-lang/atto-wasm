@@ -1251,3 +1251,64 @@ test("post-import poisoned own-property checks cannot execute metadata getters",
   assert.deepEqual(await readFile(w.output+".current.json"),pointer);
  }finally{await cleanup(w.dir)}
 });
+
+
+test("regex prototype poisoning cannot bypass provenance SHA or reject valid publication",async()=>{
+ const w=await workspace();
+ const priorTest=Object.getOwnPropertyDescriptor(RegExp.prototype,"test");
+ const priorExec=Object.getOwnPropertyDescriptor(RegExp.prototype,"exec");
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  const poisonedManifest={...baseline.manifest,
+   producer:{...baseline.manifest.producer,compilerSha256:"not-a-sha"}};
+  let good,bad,calls=0;
+  try{
+   // Native RegExp.test calls .exec, so capturing .test without .exec
+   // still lets a compromised prototype forge regex admission results.
+   Object.defineProperty(RegExp.prototype,"test",{configurable:true,writable:true,
+    value(){calls++;return true}});
+   Object.defineProperty(RegExp.prototype,"exec",{configurable:true,writable:true,
+    value(){calls++;return ["FORGED_MATCH"]}});
+   // Both requests run the entire synchronous admission phase before their
+   // first filesystem await. Restore the global intrinsics before awaiting.
+   good=publishAtomicRelease({output:w.output,wasm:baseline.wasm,
+    manifest:baseline.manifest,
+    provenance:{...baseline.provenance,note:"native-regex-publication"}});
+   bad=publishAtomicRelease({output:w.output,wasm:baseline.wasm,
+    manifest:poisonedManifest,
+    provenance:{...baseline.provenance,compilerSha256:"not-a-sha"}});
+  }finally{
+   if(priorTest)Object.defineProperty(RegExp.prototype,"test",priorTest);
+   else delete RegExp.prototype.test;
+   if(priorExec)Object.defineProperty(RegExp.prototype,"exec",priorExec);
+   else delete RegExp.prototype.exec;
+  }
+  const goodResult=await good;
+  await assert.rejects(bad,/invalid producer record/);
+  assert.equal(calls,0,"release admission must use captured native regex execution");
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,goodResult.releaseSha256);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("compiler bridge export admission ignores poisoned RegExp.test and exec",async()=>{
+ const w=await workspace();
+ try{
+  const url=new URL("../scripts/compile-ores.mjs",import.meta.url).href;
+  const options={compiler:w.compiler,source:w.source,
+   output:w.output,publication:"atomic",environment:"browser",exportName:"invalid-name"};
+  const childSource=[
+   "import {compileOresToWasm} from "+JSON.stringify(url)+";",
+   "RegExp.prototype.test=()=>true;RegExp.prototype.exec=()=>['FORGED_MATCH'];",
+   "try{await compileOresToWasm("+JSON.stringify(options)+");process.exitCode=7}",
+   "catch(e){if(String(e?.message).includes('unsupported export name'))process.exitCode=0;",
+   "else {console.error(e);process.exitCode=8}}"
+  ].join("\n");
+  const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
+   {timeout:15000,encoding:"utf8"});
+  assert.equal(child.status,0,"compiler accepted invalid export or failed unexpectedly: "+
+   JSON.stringify({status:child.status,signal:child.signal,stderr:child.stderr}));
+  await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+ }finally{await cleanup(w.dir)}
+});
