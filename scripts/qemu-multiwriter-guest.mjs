@@ -68,7 +68,7 @@ if(process.env.QEMU_WRITER_VAL){
    });
    child.stderr.on("data",buf=>{errors=(errors+buf.toString("utf8")).slice(-2048)});
    child.once("error",err=>end(err));
-   child.once("exit",(code,signal)=>{
+   child.once("close",(code,signal)=>{
     if(value===43)end(Error("stalled publisher unexpectedly exited "+code+"/"+signal));
     else if(code!==0||!seen)end(Error("publisher "+value+" failed: "+code+" "+errors));
     else end(null,{value,stalled:false,pid:child.pid});
