@@ -441,3 +441,22 @@ test("normalized schema fingerprint is independent of inherited serialization an
  assert.deepEqual(after,before,"schema-bound bytes must not change");
  assert.deepEqual(decoded,message);
 });
+
+
+test("primitive type rejection does not execute poisoned Set.prototype.has",async()=>{
+ const original=Object.getOwnPropertyDescriptor(Set.prototype,"has");
+ const invalid={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Bad",fields:[{name:"x",type:"not_a_primitive"}]
+ }]};
+ let called=0,pending;
+ try{
+  Object.defineProperty(Set.prototype,"has",{configurable:true,writable:true,
+   value(){called++;throw Error("Set.has prototype callback executed")}});
+  pending=encodeMessage(invalid,{variant:"Bad",fields:{x:1n}});
+ }finally{
+  if(original)Object.defineProperty(Set.prototype,"has",original);
+  else delete Set.prototype.has;
+ }
+ await assert.rejects(pending,/invalid type shape/);
+ assert.equal(called,0);
+});
