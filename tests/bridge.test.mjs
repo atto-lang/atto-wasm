@@ -48,11 +48,10 @@ test("compiler bridge resists poisoned native SHA-256 prototype methods",{timeou
  try{
   const compiler=join(dir,"compiler.sh"),source=join(dir,"main.ores");
   const output=join(dir,"guest.wasm");
-  await writeFile(compiler,
-   "#!/bin/sh\\nprintf 'target triple = \\\"wasm32-unknown-unknown\\\"\\\\ndefine i64 @main() { ret i64 42 }\\\\n'\\n",
-   {mode:0o700});
+  const script="#!/bin/sh\nprintf 'target triple = \"wasm32-unknown-unknown\"\\ndefine i64 @main() { ret i64 42 }\\n'\n";
+  await writeFile(compiler,script,{mode:0o700});
   await chmod(compiler,0o700);
-  await writeFile(source,"pub fnc main(): int { return 42; }\\n");
+  await writeFile(source,"pub fnc main(): int { return 42; }\n");
   const pin=hash(await readFile(compiler));
   const bridgeURL=new URL("../scripts/compile-ores.mjs",import.meta.url).href;
   const childSource=[
@@ -76,7 +75,7 @@ test("compiler bridge resists poisoned native SHA-256 prototype methods",{timeou
    "}",
    "if(callbacks!==0)throw Error('poisoned bridge SHA callbacks: '+callbacks);",
    "process.stdout.write(result.wasmSha256+'\\n');"
-  ].join("\\n");
+  ].join("\n");
   const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
    {encoding:"utf8",timeout:30000});
   assert.equal(child.status,0,"bridge used poisoned SHA methods: "+String(child.stderr));
