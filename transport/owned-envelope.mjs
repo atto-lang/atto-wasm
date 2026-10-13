@@ -32,6 +32,17 @@ const safeSafeInteger=Number.isSafeInteger;
 const safeSet=Uint8Array.prototype.set;
 const safeSubarray=Uint8Array.prototype.subarray;
 const primitiveJSON=JSON.stringify;
+// Resolve DataView methods once so later prototype mutation cannot alter the wire.
+const nativeGetU8=DataView.prototype.getUint8;
+const nativeGetU16=DataView.prototype.getUint16;
+const nativeGetU32=DataView.prototype.getUint32;
+const nativeGetI64=DataView.prototype.getBigInt64;
+const nativeSetU8=DataView.prototype.setUint8;
+const nativeSetU16=DataView.prototype.setUint16;
+const nativeSetU32=DataView.prototype.setUint32;
+const nativeSetI64=DataView.prototype.setBigInt64;
+const admittedSubtle=globalThis.crypto?.subtle;
+const nativeDigest=admittedSubtle?.digest;
 function safeIncludes(a,value){for(let i=0;i<a.length;i++)if(a[i]===value)return true;return false;}
 function safeEvery(a,cb){for(let i=0;i<a.length;i++)if(!cb(a[i],i))return false;return true;}
 function safeFind(a,cb){for(let i=0;i<a.length;i++)if(cb(a[i],i))return a[i];}
@@ -198,8 +209,8 @@ function contract(c){
  return normalized;
 }
 async function digest(c){
- if(!globalThis.crypto?.subtle)fail("WebCrypto SHA-256 required");
- return new Uint8Array(await crypto.subtle.digest("SHA-256",
+ if(!nativeDigest)fail("WebCrypto SHA-256 required");
+ return new Uint8Array(await nativeDigest.call(admittedSubtle,"SHA-256",
   encodeUTF8("Oreslang owned-message contract v1\n"+normalizedJSON(c))));
 }
 function stringBytes(s,remaining){
@@ -229,10 +240,10 @@ class Writer{
   this.parts[this.parts.length]=copy;this.size+=copy.byteLength;
  }
  u8(n){const b=new Uint8Array(1);b[0]=n;this.put(b);}
- u16(n){const b=new Uint8Array(2);new DataView(b.buffer).setUint16(0,n,true);this.put(b);}
- u32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,true);this.put(b);}
+ u16(n){const b=new Uint8Array(2);nativeSetU16.call(new DataView(b.buffer),0,n,true);this.put(b);}
+ u32(n){const b=new Uint8Array(4);nativeSetU32.call(new DataView(b.buffer),0,n,true);this.put(b);}
  i64(n){if(typeof n!=="bigint"||n<-(1n<<63n)||n>(1n<<63n)-1n)fail("signed i64 BigInt required");
-  const b=new Uint8Array(8);new DataView(b.buffer).setBigInt64(0,n,true);this.put(b);}
+  const b=new Uint8Array(8);nativeSetI64.call(new DataView(b.buffer),0,n,true);this.put(b);}
  finish(){const b=new Uint8Array(this.size);let p=0;for(let i=0;i<this.parts.length;i++){const x=this.parts[i];safeSet.call(b,x,p);p+=x.length;}return b;}
 }
 class Reader{
@@ -240,10 +251,10 @@ class Reader{
  visit(){if(++this.visits>ITEMS)fail("value node budget exceeded");}
  take(n){if(!safeSafeInteger(n)||n<0||n>this.b.length-this.at)fail("truncated payload");
   const x=safeSubarray.call(this.b,this.at,this.at+n);this.at+=n;return x;}
- u8(){this.take(1);return this.dv.getUint8(this.at-1);}
- u16(){this.take(2);return this.dv.getUint16(this.at-2,true);}
- u32(){this.take(4);return this.dv.getUint32(this.at-4,true);}
- i64(){this.take(8);return this.dv.getBigInt64(this.at-8,true);}
+ u8(){this.take(1);return nativeGetU8.call(this.dv,this.at-1);}
+ u16(){this.take(2);return nativeGetU16.call(this.dv,this.at-2,true);}
+ u32(){this.take(4);return nativeGetU32.call(this.dv,this.at-4,true);}
+ i64(){this.take(8);return nativeGetI64.call(this.dv,this.at-8,true);}
 }
 function encode(w,t,x,d=0){
  if(d>DEPTH)fail("value nesting too deep");
@@ -328,8 +339,8 @@ export async function encodeMessage(schema,message,{maxBytes=LIMIT}={}){
  // Payload bytes and normalized schema are snapshotted before any await.
  const payload=w.finish(),hash=await digest(c);
  const result=new Uint8Array(HEADER+payload.length),dv=new DataView(result.buffer);
- safeSet.call(result,magic);dv.setUint8(4,1);dv.setUint8(5,0);dv.setUint16(6,v.id,true);
- dv.setUint32(8,payload.length,true);safeSet.call(result,hash,12);safeSet.call(result,payload,HEADER);return result;
+ safeSet.call(result,magic);nativeSetU8.call(dv,4,1);nativeSetU8.call(dv,5,0);nativeSetU16.call(dv,6,v.id,true);
+ nativeSetU32.call(dv,8,payload.length,true);safeSet.call(result,hash,12);safeSet.call(result,payload,HEADER);return result;
 }
 export async function decodeMessage(schema,input,{maxBytes=LIMIT}={}){
  budget(maxBytes);const c=contract(schema),bytes=snapshot(input,maxBytes);
