@@ -70,6 +70,7 @@ def create_guest_tree(root):
   shutil.copy2(ROOT/"scripts"/filename,root/"workspace/scripts"/filename)
  shutil.copy2(ROOT/"scripts/qemu-fault-guest.mjs",root/"workspace/qemu-fault-guest.mjs")
  shutil.copy2(ROOT/"scripts/qemu-multiwriter-guest.mjs",root/"workspace/qemu-multiwriter-guest.mjs")
+ shutil.copy2(ROOT/"scripts/qemu-writer-liveness.mjs",root/"workspace/scripts/qemu-writer-liveness.mjs")
  init="""#!/bin/sh
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sys /sys

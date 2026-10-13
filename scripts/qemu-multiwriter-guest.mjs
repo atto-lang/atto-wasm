@@ -7,6 +7,7 @@ import {spawn} from "node:child_process";
 import {readFile} from "node:fs/promises";
 import {createHash} from "node:crypto";
 import {fileURLToPath} from "node:url";
+import {assertStalledPublisherAlive} from "./scripts/qemu-writer-liveness.mjs";
 import {publishAtomicRelease,readAtomicRelease,inspectAtomicReleaseState}
   from "./scripts/atomic-release.mjs";
 
@@ -77,13 +78,17 @@ if(process.env.QEMU_WRITER_VAL){
  try{
   const first=await run(43);
   if(!first.stalled)throw Error("writer 43 did not stop after pointer rename");
+  assertStalledPublisherAlive(children[0],first.pid);
   console.log("GUEST_OVERLAPPED_WRITER",first.value,first.pid);
   for(const value of (count===2?[44]:[44,45])){
    const result=await run(value);
    if(result.stalled||result.pid===first.pid)throw Error("publisher processes not independent");
+   assertStalledPublisherAlive(children[0],first.pid);
    console.log("GUEST_SEPARATE_WRITER_COMPLETED",value,result.pid);
   }
   const newest=candidate(count===2?44:45);
+  assertStalledPublisherAlive(children[0],first.pid);
+  console.log("GUEST_LIVE_STALLED_PUBLISHER_CONFIRMED",first.pid);
   console.log("GUEST_POWER_CUT_BOUNDARY",checkpoint,"final="+newest.releaseSha256);
   await new Promise(()=>setInterval(()=>{},60000));
  }finally{
