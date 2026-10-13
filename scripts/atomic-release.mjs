@@ -33,6 +33,10 @@ const intrinsicBufferEquals=Buffer.prototype.equals;
 const intrinsicTextDecoder=TextDecoder;
 const intrinsicDecode=TextDecoder.prototype.decode;
 const intrinsicJSONParse=JSON.parse;
+const intrinsicWasmNamespace=WebAssembly;
+const intrinsicWasmValidate=WebAssembly.validate;
+const intrinsicWasmModule=WebAssembly.Module;
+const intrinsicWasmImports=WebAssembly.Module.imports;
 const parseUTF8JSON=bytes=>intrinsicJSONParse(intrinsicApply(intrinsicDecode,
  new intrinsicTextDecoder("utf-8",{fatal:true}),[bytes]));
 const intrinsicUint8Array=Uint8Array;
@@ -211,7 +215,8 @@ function parseCanonicalSeal(bytes){
 }
 function descriptorFor(wasm,manifest,provenance){
  if(wasm.length<8||wasm.length>16777216)fail("Wasm budget");
- if(!WebAssembly.validate(wasm))fail("invalid executable Wasm");
+ if(!intrinsicApply(intrinsicWasmValidate,intrinsicWasmNamespace,[wasm]))
+  fail("invalid executable Wasm");
  if(!exactKeys(provenance,["schemaVersion","kind","compilerSha256",
       "sourceSha256","llvmIrSha256","wasmSha256","exportName","wasmBytes",
       "importCount","clangVersion","note"])||
@@ -227,7 +232,8 @@ function descriptorFor(wasm,manifest,provenance){
     !boundedCodePoints(provenance.note,0,1024))
    fail("invalid producer record");
  if(provenance.wasmSha256!==digest(wasm))fail("invalid provenance digest");
- if(WebAssembly.Module.imports(new WebAssembly.Module(wasm)).length!==0)
+ if(intrinsicApply(intrinsicWasmImports,intrinsicWasmModule,
+  [new intrinsicWasmModule(wasm)]).length!==0)
    fail("guest Wasm host imports forbidden");
  try{assertCoreI64Entry(wasm,provenance.exportName)}
  catch{fail("invalid core i64 entry ABI")}
