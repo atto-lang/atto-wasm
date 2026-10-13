@@ -362,8 +362,9 @@ export async function publishAtomicRelease({
  if(provenanceBytes.length>16384||(manifestBytes&&manifestBytes.length>16384))
   fail("metadata exceeds 16 KiB");
  await mkdir(dirname(destination),{recursive:true});
- await mkdir(root,{recursive:true,mode:0o700});
+ // Check the pointer parent BEFORE creating a release root in it.
  await requirePrivatePointerParent(pointer);
+ await mkdir(root,{recursive:true,mode:0o700});
  const rootStat=await lstat(root);
  if(!isPrivateDirectory(rootStat))fail("release root symlink or unsafe permissions");
  // Persist the release-root directory entry before any pointer can refer to it.
