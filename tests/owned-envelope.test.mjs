@@ -401,3 +401,43 @@ test("UTF-8 preflight admits exact byte-budget boundaries and rejects oversized 
    {maxBytes}),/byte budget exceeded/);
  }
 });
+
+
+test("normalized schema fingerprint is independent of inherited serialization and Array helpers",async()=>{
+ const message={variant:"Compute",fields:{text:"stable",n:42n}};
+ const before=await encodeMessage(contract,message);
+ const entries=[
+  [Object.prototype,"toJSON"],
+  [Array.prototype,"toJSON"],
+  [Array.prototype,"includes"],
+  [Array.prototype,"every"],
+  [Array.prototype,"map"],
+  [Array.prototype,"sort"],
+  [Array.prototype,"find"],
+  [Array.prototype,"forEach"],
+  [Array.prototype,"push"],
+  [Array.prototype,"join"]
+ ];
+ const originals=[];
+ let calls=0,after,decoded;
+ const poison=()=>{calls++;throw Error("inherited callback executed during schema admission");};
+ try{
+  for(let i=0;i<entries.length;i++){
+   const [target,key]=entries[i];
+   originals[i]=Object.getOwnPropertyDescriptor(target,key);
+   Object.defineProperty(target,key,{configurable:true,writable:true,value:poison});
+  }
+  after=await encodeMessage(contract,message);
+  decoded=await decodeMessage(contract,before);
+ }finally{
+  for(let i=entries.length-1;i>=0;i--){
+   if(!(i in originals))continue;
+   const [target,key]=entries[i];
+   if(originals[i])Object.defineProperty(target,key,originals[i]);
+   else delete target[key];
+  }
+ }
+ assert.equal(calls,0,"hostile inherited callbacks must not execute");
+ assert.deepEqual(after,before,"schema-bound bytes must not change");
+ assert.deepEqual(decoded,message);
+});
