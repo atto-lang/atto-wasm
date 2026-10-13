@@ -11,7 +11,18 @@ import {assertCoreI64Entry} from "./core-i64-abi.mjs";
 import {inspectWasmBytes} from "./inspect-core-memory.mjs";
 import {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
 export {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
-const digest=b=>createHash("sha256").update(b).digest("hex");
+// Hash.prototype.update/digest are mutable after import. Capture both
+// native methods, as well as Reflect.apply, before accepting any release.
+// Metadata digests must not execute injected callbacks or permit forged
+// digests when public Hash methods are subsequently replaced.
+const intrinsicHashUpdate=createHash("sha256").update;
+const intrinsicHashDigest=createHash("sha256").digest;
+const hashApply=Reflect.apply;
+function digest(bytes){
+ const hash=createHash("sha256");
+ hashApply(intrinsicHashUpdate,hash,[bytes]);
+ return hashApply(intrinsicHashDigest,hash,["hex"]);
+}
 // Capture native RegExp.exec: captured .test() alone would still dispatch
 // through a mutable prototype .exec and could bypass admission checks.
 const intrinsicApply=Reflect.apply;
