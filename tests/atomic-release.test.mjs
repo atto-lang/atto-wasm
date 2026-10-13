@@ -1449,7 +1449,10 @@ test("independent processes racing as publishers and readers never select partia
     output:w.output,wasm:baseline.wasm,manifest:baseline.manifest,
     provenance:{...baseline.provenance,note:"parent-writer-"+i}
    });
-  child.stdin.write("GO\n");
+  // Close the write end after the handshake. Leaving stdin open keeps the
+  // child's flow-mode stdin stream alive after PUBLISHED, so 'close' never
+  // arrives and node --test can hang even though publication succeeded.
+  child.stdin.end("GO\n");
   await waitForTestBounded("concurrent publisher phase",Promise.all(parents),70000);
   for(let i=0;i<10;i++){
    const current=await readAtomicRelease(w.output);
