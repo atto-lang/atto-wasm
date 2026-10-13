@@ -99,10 +99,15 @@ export function canonicalReleaseMetadata(x){
   if(Array.isArray(value)){
    if(Object.getPrototypeOf(value)!==Array.prototype)
     fail("invalid canonical metadata array prototype");
-   const keys=Reflect.ownKeys(value);
    const length=Object.getOwnPropertyDescriptor(value,"length")?.value;
-   if(!Number.isSafeInteger(length)||length<0||
-      keys.length!==length+1||keys[keys.length-1]!=="length")
+   if(!Number.isSafeInteger(length)||length<0)
+    fail("invalid canonical metadata array properties");
+   // Every element consumes at least one byte, plus one separator except the
+   // first. Reject a giant array before Reflect.ownKeys materializes its keys.
+   if(length>(MAX_CANONICAL_BYTES-2)/2)
+    fail("canonical metadata byte budget");
+   const keys=Reflect.ownKeys(value);
+   if(keys.length!==length+1||keys[keys.length-1]!=="length")
     fail("invalid canonical metadata array properties");
    let encoded=emit("[");
    for(let i=0;i<length;i++){
