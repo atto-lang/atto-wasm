@@ -15,6 +15,14 @@ const digest=b=>createHash("sha256").update(b).digest("hex");
 // Capture native RegExp.exec: captured .test() alone would still dispatch
 // through a mutable prototype .exec and could bypass admission checks.
 const intrinsicApply=Reflect.apply;
+// Never consult mutable fs.Stats prototype predicates or mutable O_NOFOLLOW
+// flags while authenticating a release directory or opened file.
+const FILE_MODE_MASK=fsConstants.S_IFMT;
+const FILE_MODE_REGULAR=fsConstants.S_IFREG;
+const FILE_MODE_DIRECTORY=fsConstants.S_IFDIR;
+const SEALED_READ_FLAGS=fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK;
+const isNativeFile=stat=>(stat.mode&FILE_MODE_MASK)===FILE_MODE_REGULAR;
+const isNativeDirectory=stat=>(stat.mode&FILE_MODE_MASK)===FILE_MODE_DIRECTORY;
 // Sealed-file verification must operate on the actual bytes read from disk.
 // Capture Buffer operations before any post-import prototype or static-method
 // mutation; never allow a replaced .subarray/.concat/.equals to forge bytes.
@@ -155,18 +163,17 @@ async function durableWrite(path,bytes){
 }
 
 // Bind validation, sizing and reading to ONE open file descriptor. O_NOFOLLOW
-// prevents a file-path substitution from turning a validated regular file into
-// a symlink. Chunked reads stop at the cap even if a file grows while reading.
+// prevents a substituted symlink; exact fstat-sized reads reject concurrent
+// shortening or growth and never trust inherited fs.Stats type predicates.
 async function safeFile(path,limit){
  // O_NOFOLLOW denies symlinks. O_NONBLOCK additionally prevents a substituted
  // FIFO/device pathname from parking the verifier before fstat can reject it.
- const handle=await open(path,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|
-   fsConstants.O_NONBLOCK);
+ const handle=await open(path,SEALED_READ_FLAGS);
  try{
   const stat=await handle.stat();
   // Hard links outside this directory alias the same inode but are not
   // covered by the sealed namespace. Reject before interpreting any bytes.
-  if(!stat.isFile()||stat.size>limit||stat.nlink!==1)
+  if(!isNativeFile(stat)||stat.size>limit||stat.nlink!==1)
    fail("invalid file");
   // Read exactly the fstat-observed byte count into a single bounded
   // allocation. Buffer.concat indirectly calls mutable Buffer.allocUnsafe,
@@ -259,7 +266,7 @@ function descriptorFor(wasm,manifest,provenance){
 async function verifyDir(dir,id){
  if(!hex(id))fail("invalid identity");
  const st=await lstat(dir);
- if(!st.isDirectory()||st.isSymbolicLink())fail("release is not a real directory");
+ if(!isNativeDirectory(st))fail("release is not a real directory");
  const seal=parseCanonicalSeal(await safeFile(join(dir,"seal.json"),16384));
  // A content-addressed release has a CLOSED on-disk namespace: hashes of
  // expected files do not authorize extra sidecars, executables or symlinks.
@@ -303,7 +310,7 @@ async function verifyDir(dir,id){
 export async function readAtomicRelease(output){
  const {root,pointer}=paths(resolve(output));
  const st=await lstat(root);
- if(!st.isDirectory()||st.isSymbolicLink())fail("invalid release root");
+ if(!isNativeDirectory(st))fail("invalid release root");
  const pointerBytes=await safeFile(pointer,16384);
  let p;
  try{p=parseUTF8JSON(pointerBytes)}
@@ -342,7 +349,7 @@ export async function publishAtomicRelease({
  await mkdir(dirname(destination),{recursive:true});
  await mkdir(root,{recursive:true,mode:0o700});
  const rootStat=await lstat(root);
- if(!rootStat.isDirectory()||rootStat.isSymbolicLink())fail("release root symlink");
+ if(!isNativeDirectory(rootStat))fail("release root symlink");
  // Persist the release-root directory entry before any pointer can refer to it.
  await fsyncDirectory(dirname(root));
  const stage=await mkdtemp(join(root,".staging-"));
@@ -435,7 +442,7 @@ export async function inspectAtomicReleaseState(output){
  let entries;
  try{
   const stat=await lstat(root);
-  if(!stat.isDirectory()||stat.isSymbolicLink())fail("invalid release root");
+  if(!isNativeDirectory(stat))fail("invalid release root");
   entries=await readdir(root,{withFileTypes:true});
  }catch(error){
   if(error?.code==="ENOENT")
