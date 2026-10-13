@@ -20,6 +20,8 @@ const objectKeys=Object.keys;
 const hasOwn=Object.hasOwn;
 const arrayIsArray=Array.isArray;
 const isFiniteNumber=Number.isFinite;
+const isSafeInteger=Number.isSafeInteger;
+const numberToString=String;
 const stringJSON=JSON.stringify;
 const byteLength=Buffer.byteLength;
 const alloc=Buffer.alloc;
@@ -60,7 +62,7 @@ export function canonicalReleaseMetadata(value){
    if(getPrototypeOf(node)!==Array.prototype)
     fail("invalid canonical metadata array prototype");
    const length=getOwnPropertyDescriptor(node,"length")?.value;
-   if(!Number.isSafeInteger(length)||length<0)
+   if(!isSafeInteger(length)||length<0)
     fail("invalid canonical metadata array properties");
    // A dense array needs at least n one-byte values and n-1 commas.
    if(length>(MAX_CANONICAL_RELEASE_BYTES-2)/2)
@@ -70,7 +72,7 @@ export function canonicalReleaseMetadata(value){
     fail("invalid canonical metadata array properties");
    emit("[");
    for(let i=0;i<length;i++){
-    const key=String(i);
+    const key=numberToString(i);
     if(keys[i]!==key)fail("invalid canonical metadata array index");
     const descriptor=getOwnPropertyDescriptor(node,key);
     if(!descriptor||!hasOwn(descriptor,"value")||!descriptor.enumerable)
