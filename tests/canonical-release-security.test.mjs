@@ -108,7 +108,7 @@ test("1000 seeded records match native JSON bytes without inherited callbacks",(
 
 test("dense array index serialization ignores poisoned global String and safe-integer gate",()=>{
  const array=[0,"safe",null,true,{x:4},["nested"]];
- const expected='[0,"safe",null,true,{"x":4},["nested"]]\\n';
+ const expected='[0,"safe",null,true,{"x":4},["nested"]]\n';
  const originalString=Object.getOwnPropertyDescriptor(globalThis,"String");
  const originalSafeInteger=Object.getOwnPropertyDescriptor(Number,"isSafeInteger");
  let calls=0,actual;
