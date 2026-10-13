@@ -552,3 +552,36 @@ test("UTF-8 preflight and wire decoding ignore poisoned text prototype methods",
  assert.deepEqual(decoded,value,"poisoned decoder must not replace guest text");
  assert.match(String(oversizedFailure),/byte budget exceeded/);
 });
+
+
+test("decoded message ownership survives poisoned Object.freeze and defineProperty",async()=>{
+ const fields={pair:["safe",42n],fixed:[true,false],items:["hello"],
+  state:{variant:"Some",value:[1n,"nested"]},blob:new Uint8Array([1,2])};
+ const wire=await encodeMessage(contract,{variant:"Batch",fields});
+ const savedFreeze=Object.getOwnPropertyDescriptor(Object,"freeze");
+ const savedDefine=Object.getOwnPropertyDescriptor(Object,"defineProperty");
+ const nativeDefine=Object.defineProperty;
+ let calls=0,decoded;
+ try{
+  nativeDefine(Object,"freeze",{configurable:true,writable:true,value(v){
+   calls++;return v;
+  }});
+  nativeDefine(Object,"defineProperty",{configurable:true,writable:true,value(){
+   calls++;throw Error("poisoned decoder property-definition callback");
+  }});
+  decoded=await decodeMessage(contract,wire);
+ }finally{
+  nativeDefine(Object,"freeze",savedFreeze);
+  nativeDefine(Object,"defineProperty",savedDefine);
+ }
+ assert.equal(calls,0,"mutable Object statics must not affect guest message admission");
+ assert.equal(Object.isFrozen(decoded),true);
+ assert.equal(Object.isFrozen(decoded.fields),true);
+ assert.equal(Object.isFrozen(decoded.fields.pair),true);
+ assert.equal(Object.isFrozen(decoded.fields.items),true);
+ assert.equal(Object.isFrozen(decoded.fields.state),true);
+ assert.equal(Object.isFrozen(decoded.fields.state.value),true);
+ assert.deepEqual(decoded.fields.pair,["safe",42n]);
+ assert.deepEqual(decoded.fields.items,["hello"]);
+ assert.equal(decoded.fields.blob[0],1,"binary bytes are copied, not frozen");
+});
