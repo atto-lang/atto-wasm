@@ -15,6 +15,16 @@ const digest=b=>createHash("sha256").update(b).digest("hex");
 // Capture native RegExp.exec: captured .test() alone would still dispatch
 // through a mutable prototype .exec and could bypass admission checks.
 const intrinsicApply=Reflect.apply;
+// Sealed-file verification must operate on the actual bytes read from disk.
+// Capture Buffer operations before any post-import prototype or static-method
+// mutation; never allow a replaced .subarray/.concat/.equals to forge bytes.
+const intrinsicBufferFrom=Buffer.from;
+const intrinsicBufferConcat=Buffer.concat;
+const intrinsicBufferAllocUnsafe=Buffer.allocUnsafe;
+const intrinsicBufferSubarray=Buffer.prototype.subarray;
+const intrinsicBufferEquals=Buffer.prototype.equals;
+const intrinsicBufferToString=Buffer.prototype.toString;
+const intrinsicUint8Array=Uint8Array;
 const intrinsicRegExpExec=RegExp.prototype.exec;
 const regexMatches=(pattern,value)=>
  intrinsicApply(intrinsicRegExpExec,pattern,[value])!==null;
@@ -69,7 +79,7 @@ function ownedWasmSnapshot(wasm){
  if(length<8||length>16777216)fail("Wasm budget");
  // Newly constructed intrinsic view has no caller-controlled prototype
  // overrides; it is copied synchronously before metadata validation.
- return Buffer.from(new Uint8Array(backing,offset,length));
+ return intrinsicApply(intrinsicBufferFrom,Buffer,[new intrinsicUint8Array(backing,offset,length)]);
 }
 
 // A pointer rename is the visibility/linearization point. If the subsequent
@@ -153,14 +163,14 @@ async function safeFile(path,limit){
   const chunks=[];
   let length=0;
   for(;;){
-   const chunk=Buffer.allocUnsafe(Math.min(65536,limit+1-length));
+   const chunk=intrinsicApply(intrinsicBufferAllocUnsafe,Buffer,[Math.min(65536,limit+1-length)]);
    const {bytesRead}=await handle.read(chunk,0,chunk.length,null);
    if(bytesRead===0)break;
    length+=bytesRead;
    if(length>limit)fail("oversized file");
-   chunks[chunks.length]=chunk.subarray(0,bytesRead);
+   chunks[chunks.length]=intrinsicApply(intrinsicBufferSubarray,chunk,[0,bytesRead]);
   }
-  return Buffer.concat(chunks,length);
+  return intrinsicApply(intrinsicBufferConcat,Buffer,[chunks,length]);
  }finally{await handle.close()}
 }
 // Verify the exact bytes before interpreting the seal. Unlike JSON.parse,
@@ -171,7 +181,7 @@ function parseCanonicalSeal(bytes){
  try{seal=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes))}
  catch{fail("invalid release seal JSON")}
  if(!seal||typeof seal!=="object"||nativeIsArray(seal)||
-    !bytes.equals(canonical(seal))||
+    !intrinsicApply(intrinsicBufferEquals,bytes,[canonical(seal)])||
     !orderedKeys(seal,["schemaVersion","type","fileHashes"])||
     !seal.fileHashes||typeof seal.fileHashes!=="object"||
     nativeIsArray(seal.fileHashes)||
@@ -283,13 +293,13 @@ export async function readAtomicRelease(output){
  if(!st.isDirectory()||st.isSymbolicLink())fail("invalid release root");
  const pointerBytes=await safeFile(pointer,16384);
  let p;
- try{p=JSON.parse(pointerBytes.toString("utf8"))}
+ try{p=JSON.parse(intrinsicApply(intrinsicBufferToString,pointerBytes,["utf8"]))}
  catch{fail("invalid current pointer JSON")}
  // Publisher emits a single canonical encoding. Reject duplicate JSON keys,
  // reordered fields or alternate encodings instead of trusting last-key-wins.
  if(!p||typeof p!=="object"||nativeIsArray(p)||
     !orderedKeys(p,["schemaVersion","releaseSha256"])||
-    !pointerBytes.equals(canonical(p)))fail("noncanonical current pointer");
+    !intrinsicApply(intrinsicBufferEquals,pointerBytes,[canonical(p)]))fail("noncanonical current pointer");
  if(p.schemaVersion!==1||!hex(p.releaseSha256))
   fail("invalid current pointer");
  return verifyDir(join(root,p.releaseSha256),p.releaseSha256);
