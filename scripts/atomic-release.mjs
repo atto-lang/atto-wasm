@@ -235,6 +235,25 @@ async function verifyDir(dir,id){
  const st=await lstat(dir);
  if(!st.isDirectory()||st.isSymbolicLink())fail("release is not a real directory");
  const seal=parseCanonicalSeal(await safeFile(join(dir,"seal.json"),16384));
+ // A content-addressed release has a CLOSED on-disk namespace: hashes of
+ // expected files do not authorize extra sidecars, executables or symlinks.
+ // Reject unknown directory entries before returning a verified identity.
+ // Do not use mutable Array.prototype predicates for these checks.
+ const entries=await readdir(dir);
+ const expectedCount=seal.fileHashes?.manifest===null?3:4;
+ if(entries.length!==expectedCount)fail("unexpected sealed release entry");
+ let wasmSeen=false,provenanceSeen=false,sealSeen=false,manifestSeen=false;
+ for(let i=0;i<entries.length;i++){
+  const name=entries[i];
+  if(name==="guest.wasm"){wasmSeen=true;continue}
+  if(name==="provenance.json"){provenanceSeen=true;continue}
+  if(name==="seal.json"){sealSeen=true;continue}
+  if(name==="artifact.json"&&expectedCount===4){manifestSeen=true;continue}
+  fail("unexpected sealed release entry");
+ }
+ if(!wasmSeen||!provenanceSeen||!sealSeen||
+    (expectedCount===4&&!manifestSeen))
+  fail("missing sealed release entry");
  if(seal.schemaVersion!==1||seal.type!=="oreslang.atomic-release-v1"||
     !hex(seal.fileHashes?.wasm)||!hex(seal.fileHashes?.provenance)||
     !(seal.fileHashes.manifest===null||hex(seal.fileHashes.manifest))||
