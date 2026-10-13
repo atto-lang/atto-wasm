@@ -40,10 +40,10 @@ class QemuRecoveryReceiptTest(unittest.TestCase):
         # certify a later recovery report.
         lines.insert(1,marker)
         with self.assertRaisesRegex(RuntimeError,"preceded recovery receipt"):
-            qemu.validate_cold_boot_receipt("\\n".join(lines)+"\\n",HOOK,0)
+            qemu.validate_cold_boot_receipt("\n".join(lines)+"\n",HOOK,0)
 
     def test_duplicate_clean_completion_never_certifies_recovery(self):
-        report=transcript()+"GUEST_PROCESS_CLEAN_FINISH\\n"
+        report=transcript()+"GUEST_PROCESS_CLEAN_FINISH\n"
         with self.assertRaisesRegex(RuntimeError,"did not complete"):
             qemu.validate_cold_boot_receipt(report,HOOK,0)
 
