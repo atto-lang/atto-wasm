@@ -10,17 +10,39 @@ const HEADER=44, LIMIT=1048576, DEPTH=12, ITEMS=4096;
 const SCHEMA_NODES=4096, SCHEMA_BYTES=65536;
 const magic=Uint8Array.of(79,82,77,49);
 const enc=new TextEncoder(),dec=new TextDecoder("utf-8",{fatal:true});
+// Capture text intrinsics at module admission. Mutable String/TextEncoder and
+// TextDecoder prototype methods must not weaken UTF-8 budgets or wire bytes.
+const readCodeUnit=String.prototype.charCodeAt;
+const nativeEncode=TextEncoder.prototype.encode;
+const nativeDecode=TextDecoder.prototype.decode;
+const encodeUTF8=s=>nativeEncode.call(enc,s);
+const decodeUTF8=b=>nativeDecode.call(dec,b);
 // Primitive type admission uses literal comparisons, never mutable Set.prototype.has.
 const safeDescriptor=Object.getOwnPropertyDescriptor;
+const safeDefine=Object.defineProperty;
+const safeFreeze=Object.freeze;
 const safePrototype=Object.getPrototypeOf;
 const safeHasOwn=Object.hasOwn;
 const safeKeys=Object.keys;
 const safeOwnKeys=Reflect.ownKeys;
 const safeIsArray=Array.isArray;
 const safeIsView=ArrayBuffer.isView;
+const safeInteger=Number.isInteger;
+const safeSafeInteger=Number.isSafeInteger;
 const safeSet=Uint8Array.prototype.set;
 const safeSubarray=Uint8Array.prototype.subarray;
 const primitiveJSON=JSON.stringify;
+// Resolve DataView methods once so later prototype mutation cannot alter the wire.
+const nativeGetU8=DataView.prototype.getUint8;
+const nativeGetU16=DataView.prototype.getUint16;
+const nativeGetU32=DataView.prototype.getUint32;
+const nativeGetI64=DataView.prototype.getBigInt64;
+const nativeSetU8=DataView.prototype.setUint8;
+const nativeSetU16=DataView.prototype.setUint16;
+const nativeSetU32=DataView.prototype.setUint32;
+const nativeSetI64=DataView.prototype.setBigInt64;
+const admittedSubtle=globalThis.crypto?.subtle;
+const nativeDigest=admittedSubtle?.digest;
 function safeIncludes(a,value){for(let i=0;i<a.length;i++)if(a[i]===value)return true;return false;}
 function safeEvery(a,cb){for(let i=0;i<a.length;i++)if(!cb(a[i],i))return false;return true;}
 function safeFind(a,cb){for(let i=0;i<a.length;i++)if(cb(a[i],i))return a[i];}
@@ -125,9 +147,20 @@ function dense(items,name){
   fail("invalid "+name+" shape");
 }
 function unique(a,label){for(let i=0;i<a.length;i++)for(let j=0;j<i;j++)if(a[i]===a[j])fail("duplicate "+label);}
-function name(x){if(typeof x!=="string"||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(x))fail("invalid name");return x;}
-function id(x){if(!Number.isInteger(x)||x<1||x>65535)fail("invalid ID");return x;}
-function bound(x){if(!Number.isInteger(x)||x<0||x>ITEMS)fail("invalid element bound");return x;}
+function name(x){
+ // ASCII-only ABI labels: limit length before scanning, and avoid mutable
+ // RegExp.prototype.test or String prototype methods in admission logic.
+ if(typeof x!=="string"||x.length<1||x.length>128)fail("invalid name");
+ for(let i=0;i<x.length;i++){
+  const c=readCodeUnit.call(x,i);
+  const letter=(c>=65&&c<=90)||(c>=97&&c<=122);
+  const digit=c>=48&&c<=57;
+  if(!letter&&c!==95&&(i===0||!digit))fail("invalid name");
+ }
+ return x;
+}
+function id(x){if(!safeInteger(x)||x<1||x>65535)fail("invalid ID");return x;}
+function bound(x){if(!safeInteger(x)||x<0||x>ITEMS)fail("invalid element bound");return x;}
 function type(t,d=0,ctx){
  if(d>DEPTH)fail("type nesting too deep");
  if(++ctx.nodes>SCHEMA_NODES)fail("schema node budget exceeded");
@@ -172,13 +205,13 @@ function contract(c){
  unique(safeMap(vs,v=>v.id),"variant ID");unique(safeMap(vs,v=>v.name),"variant name");
  const normalized={schemaVersion:1,ownership:"copy",variants:safeSort(vs,(a,b)=>a.id-b.id)};
  // Reject large contracts before WebCrypto hashes attacker-sized JSON.
- if(enc.encode(normalizedJSON(normalized)).length>SCHEMA_BYTES)fail("schema byte budget exceeded");
+ if(encodeUTF8(normalizedJSON(normalized)).length>SCHEMA_BYTES)fail("schema byte budget exceeded");
  return normalized;
 }
 async function digest(c){
- if(!globalThis.crypto?.subtle)fail("WebCrypto SHA-256 required");
- return new Uint8Array(await crypto.subtle.digest("SHA-256",
-  enc.encode("Oreslang owned-message contract v1\n"+normalizedJSON(c))));
+ if(!nativeDigest)fail("WebCrypto SHA-256 required");
+ return new Uint8Array(await nativeDigest.call(admittedSubtle,"SHA-256",
+  encodeUTF8("Oreslang owned-message contract v1\n"+normalizedJSON(c))));
 }
 function stringBytes(s,remaining){
  if(typeof s!=="string")fail("expected string");
@@ -186,15 +219,15 @@ function stringBytes(s,remaining){
  // hostile multi-megabyte string must not bypass a small envelope byte budget.
  let bytes=0;
  for(let i=0;i<s.length;i++){
-  const n=s.charCodeAt(i);
+  const n=readCodeUnit.call(s,i);
   if(n>=0xd800&&n<=0xdbff){
-   if(++i>=s.length||s.charCodeAt(i)<0xdc00||s.charCodeAt(i)>0xdfff)fail("unpaired surrogate");
+   if(++i>=s.length||readCodeUnit.call(s,i)<0xdc00||readCodeUnit.call(s,i)>0xdfff)fail("unpaired surrogate");
    bytes+=4;
   }else if(n>=0xdc00&&n<=0xdfff)fail("unpaired surrogate");
   else bytes+=n<0x80?1:n<0x800?2:3;
   if(bytes>remaining)fail("byte budget exceeded");
  }
- return enc.encode(s);
+ return encodeUTF8(s);
 }
 class Writer{
  constructor(limit){this.parts=[];this.size=0;this.limit=limit;this.visits=0;}
@@ -207,21 +240,21 @@ class Writer{
   this.parts[this.parts.length]=copy;this.size+=copy.byteLength;
  }
  u8(n){const b=new Uint8Array(1);b[0]=n;this.put(b);}
- u16(n){const b=new Uint8Array(2);new DataView(b.buffer).setUint16(0,n,true);this.put(b);}
- u32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,true);this.put(b);}
+ u16(n){const b=new Uint8Array(2);nativeSetU16.call(new DataView(b.buffer),0,n,true);this.put(b);}
+ u32(n){const b=new Uint8Array(4);nativeSetU32.call(new DataView(b.buffer),0,n,true);this.put(b);}
  i64(n){if(typeof n!=="bigint"||n<-(1n<<63n)||n>(1n<<63n)-1n)fail("signed i64 BigInt required");
-  const b=new Uint8Array(8);new DataView(b.buffer).setBigInt64(0,n,true);this.put(b);}
+  const b=new Uint8Array(8);nativeSetI64.call(new DataView(b.buffer),0,n,true);this.put(b);}
  finish(){const b=new Uint8Array(this.size);let p=0;for(let i=0;i<this.parts.length;i++){const x=this.parts[i];safeSet.call(b,x,p);p+=x.length;}return b;}
 }
 class Reader{
  constructor(b){this.b=b;this.at=0;this.dv=new DataView(b.buffer,b.byteOffset,b.byteLength);this.visits=0;}
  visit(){if(++this.visits>ITEMS)fail("value node budget exceeded");}
- take(n){if(!Number.isSafeInteger(n)||n<0||n>this.b.length-this.at)fail("truncated payload");
+ take(n){if(!safeSafeInteger(n)||n<0||n>this.b.length-this.at)fail("truncated payload");
   const x=safeSubarray.call(this.b,this.at,this.at+n);this.at+=n;return x;}
- u8(){this.take(1);return this.dv.getUint8(this.at-1);}
- u16(){this.take(2);return this.dv.getUint16(this.at-2,true);}
- u32(){this.take(4);return this.dv.getUint32(this.at-4,true);}
- i64(){this.take(8);return this.dv.getBigInt64(this.at-8,true);}
+ u8(){this.take(1);return nativeGetU8.call(this.dv,this.at-1);}
+ u16(){this.take(2);return nativeGetU16.call(this.dv,this.at-2,true);}
+ u32(){this.take(4);return nativeGetU32.call(this.dv,this.at-4,true);}
+ i64(){this.take(8);return nativeGetI64.call(this.dv,this.at-8,true);}
 }
 function encode(w,t,x,d=0){
  if(d>DEPTH)fail("value nesting too deep");
@@ -259,15 +292,15 @@ function decode(r,t,d=0){
  if(t==="bool"){const x=r.u8();if(x>1)fail("noncanonical bool");return !!x;}
  if(t==="string"||t==="bytes"){const b=r.take(r.u32());
   if(t==="bytes"){const owned=new Uint8Array(b.byteLength);safeSet.call(owned,b);return owned;}
-  try{return dec.decode(b);}catch{fail("invalid UTF-8");}}
- if(safeHasOwn(t,"tuple"))return Object.freeze(safeMap(t.tuple,a=>decode(r,a,d+1)));
+  try{return decodeUTF8(b);}catch{fail("invalid UTF-8");}}
+ if(safeHasOwn(t,"tuple"))return safeFreeze(safeMap(t.tuple,a=>decode(r,a,d+1)));
  if(safeHasOwn(t,"array")||safeHasOwn(t,"list")){
   const fixed=safeHasOwn(t,"array"),spec=fixed?t.array:t.list,n=fixed?spec.length:r.u32();
   if(n>ITEMS||(!fixed&&n>spec.maxLength))fail("array/list length");
-  const a=[];for(let i=0;i<n;i++)a[i]=decode(r,spec.element,d+1);return Object.freeze(a);
+  const a=[];for(let i=0;i<n;i++)a[i]=decode(r,spec.element,d+1);return safeFreeze(a);
  }
  const variantId=r.u16();const v=safeFind(t.enum,a=>a.id===variantId);if(!v)fail("unknown enum ID");
- return Object.freeze({variant:v.name,value:v.payload===null?null:decode(r,v.payload,d+1)});
+ return safeFreeze({variant:v.name,value:v.payload===null?null:decode(r,v.payload,d+1)});
 }
 function snapshot(input,maxBytes){
  let buffer,offset=0,length;
@@ -295,7 +328,7 @@ function snapshot(input,maxBytes){
  safeSet.call(result,src);
  return result;
 }
-function budget(n){if(!Number.isSafeInteger(n)||n<HEADER||n>LIMIT)fail("invalid maxBytes");}
+function budget(n){if(!safeSafeInteger(n)||n<HEADER||n>LIMIT)fail("invalid maxBytes");}
 export async function encodeMessage(schema,message,{maxBytes=LIMIT}={}){
  budget(maxBytes);
  const c=contract(schema);
@@ -306,8 +339,8 @@ export async function encodeMessage(schema,message,{maxBytes=LIMIT}={}){
  // Payload bytes and normalized schema are snapshotted before any await.
  const payload=w.finish(),hash=await digest(c);
  const result=new Uint8Array(HEADER+payload.length),dv=new DataView(result.buffer);
- safeSet.call(result,magic);dv.setUint8(4,1);dv.setUint8(5,0);dv.setUint16(6,v.id,true);
- dv.setUint32(8,payload.length,true);safeSet.call(result,hash,12);safeSet.call(result,payload,HEADER);return result;
+ safeSet.call(result,magic);nativeSetU8.call(dv,4,1);nativeSetU8.call(dv,5,0);nativeSetU16.call(dv,6,v.id,true);
+ nativeSetU32.call(dv,8,payload.length,true);safeSet.call(result,hash,12);safeSet.call(result,payload,HEADER);return result;
 }
 export async function decodeMessage(schema,input,{maxBytes=LIMIT}={}){
  budget(maxBytes);const c=contract(schema),bytes=snapshot(input,maxBytes);
@@ -323,9 +356,9 @@ export async function decodeMessage(schema,input,{maxBytes=LIMIT}={}){
   const value=decode(r,f.type);
   // Define an OWN property, including for "__proto__", without calling
   // Object.prototype setters or replacing the resulting object prototype.
-  Object.defineProperty(fields,f.name,{value,enumerable:true,writable:false,configurable:false});
+  safeDefine(fields,f.name,{value,enumerable:true,writable:false,configurable:false});
  }
  if(r.at!==bytes.length)fail("unexpected trailing payload");
- return Object.freeze({variant:v.name,fields:Object.freeze(fields)});
+ return safeFreeze({variant:v.name,fields:safeFreeze(fields)});
 }
-export const OWNED_ENVELOPE_V1=Object.freeze({version:1,headerBytes:HEADER,maxBytes:LIMIT,ownership:"copy"});
+export const OWNED_ENVELOPE_V1=safeFreeze({version:1,headerBytes:HEADER,maxBytes:LIMIT,ownership:"copy"});
