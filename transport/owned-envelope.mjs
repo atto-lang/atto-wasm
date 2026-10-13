@@ -136,7 +136,18 @@ function dense(items,name){
   fail("invalid "+name+" shape");
 }
 function unique(a,label){for(let i=0;i<a.length;i++)for(let j=0;j<i;j++)if(a[i]===a[j])fail("duplicate "+label);}
-function name(x){if(typeof x!=="string"||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(x))fail("invalid name");return x;}
+function name(x){
+ // ASCII-only ABI labels: limit length before scanning, and avoid mutable
+ // RegExp.prototype.test or String prototype methods in admission logic.
+ if(typeof x!=="string"||x.length<1||x.length>128)fail("invalid name");
+ for(let i=0;i<x.length;i++){
+  const c=readCodeUnit.call(x,i);
+  const letter=(c>=65&&c<=90)||(c>=97&&c<=122);
+  const digit=c>=48&&c<=57;
+  if(!letter&&c!==95&&(i===0||!digit))fail("invalid name");
+ }
+ return x;
+}
 function id(x){if(!safeInteger(x)||x<1||x>65535)fail("invalid ID");return x;}
 function bound(x){if(!safeInteger(x)||x<0||x>ITEMS)fail("invalid element bound");return x;}
 function type(t,d=0,ctx){
