@@ -15,6 +15,13 @@ import {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 // Hold the own-property predicate used by cleanup receipts despite pollution.
 const nativeHasOwn=Object.hasOwn;
+// Regex admission must bypass both mutable RegExp.prototype.test and .exec.
+const intrinsicApply=Reflect.apply;
+const intrinsicRegExpExec=RegExp.prototype.exec;
+const intrinsicRegExp=RegExp;
+const regexExec=(pattern,value)=>
+ intrinsicApply(intrinsicRegExpExec,pattern,[value]);
+const regexMatches=(pattern,value)=>regexExec(pattern,value)!==null;
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
 const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES=16*1024*1024;
 function rejectStartSection(bytes){
@@ -168,7 +175,7 @@ export async function compileOresToWasm({
    if(destination===sourcePath||destination===compilerPath)
    throw Error("output or artifact metadata path overlaps a compiler/source input");
  }
- if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(exportName))throw Error("unsupported export name");
+ if(!regexMatches(/^[a-zA-Z_][a-zA-Z0-9_]*$/,exportName))throw Error("unsupported export name");
  // Preflight before readFile() to avoid allocating attacker-sized compiler
  // binaries or source buffers, then check the lengths again after reading.
  const sourceStat=await stat(sourcePath),compilerStat=await stat(compilerPath);
@@ -224,9 +231,9 @@ export async function compileOresToWasm({
  // original caller path remains unchanged.
  if(sha(await readFile(stagedSource))!==sha(sourceBytes))
   throw Error("staged compiler input changed during execution");
- if(environment&&!/target triple = "wasm32-unknown-unknown"/.test(ir))
+ if(environment&&!regexMatches(/target triple = "wasm32-unknown-unknown"/,ir))
   throw Error("compiler did not emit wasm32 target-marked IR");
- if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
+ if(!regexMatches(new intrinsicRegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)"),ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
  if(ir.length>2*1024*1024)throw Error("generated IR exceeds 2 MiB");
  // Avoid shell expansion and avoid relying on persistent temporary LLVM IR.
  // Clang reads the native compiler's verified stdout as LLVM IR.
@@ -318,7 +325,7 @@ if(calledFromCli){
  try{
   const usedOptions=new Set();
   const options=Object.fromEntries(process.argv.slice(2).map(x=>{
-   const m=/^--(compiler|source|output|export|clang|compiler-sha256|environment|publication)=(.*)$/.exec(x);
+   const m=regexExec(/^--(compiler|source|output|export|clang|compiler-sha256|environment|publication)=(.*)$/,x);
    if(!m)throw Error("unexpected CLI option: "+x);
    if(usedOptions.has(m[1]))throw Error("duplicate CLI option: "+m[1]);
    usedOptions.add(m[1]);
