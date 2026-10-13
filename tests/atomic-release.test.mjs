@@ -1662,7 +1662,7 @@ test("release digesting uses captured SHA-256 methods despite post-import poison
   await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
   const baseline=await readAtomicRelease(w.output);
   const priorPointer=await readFile(w.output+".current.json");
-  const hashProto=Object.getPrototypeOf(Object.getPrototypeOf(createHash("sha256")));
+  const hashProto=Object.getPrototypeOf(createHash("sha256"));
   const oldUpdate=Object.getOwnPropertyDescriptor(hashProto,"update");
   const oldDigest=Object.getOwnPropertyDescriptor(hashProto,"digest");
   let callbacks=0,publishing;
@@ -1701,7 +1701,7 @@ test("verified release reader ignores poisoned SHA-256 prototype methods",
    "import {readAtomicRelease} from "+JSON.stringify(moduleURL)+";",
    "import {createHash} from 'node:crypto';",
    "const output="+JSON.stringify(w.output)+";",
-   "const hashProto=Object.getPrototypeOf(Object.getPrototypeOf(createHash('sha256')));",
+   "const hashProto=Object.getPrototypeOf(createHash('sha256'));",
    "const originalUpdate=Object.getOwnPropertyDescriptor(hashProto,'update');",
    "const originalDigest=Object.getOwnPropertyDescriptor(hashProto,'digest');",
    "let calls=0,identity;",
