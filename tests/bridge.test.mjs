@@ -6,6 +6,8 @@ import {join} from "node:path";
 import {createHash} from "node:crypto";
 import {spawnSync} from "node:child_process";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
+import {readAtomicRelease,inspectAtomicReleaseState} from "../scripts/atomic-release.mjs";
+import {fileURLToPath} from "node:url";
 const hash=b=>createHash("sha256").update(b).digest("hex");
 test("real Clang wasm32 bridge accepts verified IR and records hashes (stub compiler only)",async()=>{
  const dir=await mkdtemp(join(tmpdir(),"oreslang-wasm-bridge-test-"));
@@ -42,6 +44,62 @@ test("real native Oreslang compiler integration, opt-in and never simulated",{
   assert.equal((new WebAssembly.Instance(new WebAssembly.Module(bytes))).exports.main(),42n);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
+
+test("real pinned Oreslang LLVM compiler seals, verifies, executes and preserves rollback",
+ {skip:!process.env.ORESLANG_LLVM_COMPILER,timeout:120000},async()=>{
+ const compiler=process.env.ORESLANG_LLVM_COMPILER;
+ const pin=process.env.ORESLANG_LLVM_COMPILER_SHA256;
+ assert.match(pin||"",/^[0-9a-f]{64}$/,"real LLVM compiler must have a pinned SHA-256");
+ const dir=await mkdtemp(join(tmpdir(),"oreslang-real-atomic-roundtrip-"));
+ try{
+  const output=join(dir,"guest.wasm");
+  const cases=[
+   [fileURLToPath(new URL("../examples/native-int.ores",import.meta.url)),42n],
+   [fileURLToPath(new URL("../tests/fixtures/native-int-43.ores",import.meta.url)),43n]
+  ];
+  let previous=null;
+  for(const [source,expected] of cases){
+   const result=await compileOresToWasm({
+    compiler,source,output,compilerSha256:pin,
+    environment:"browser",publication:"atomic"
+   });
+   assert.equal(result.publication,"atomic");
+   assert.equal(result.compilerSha256,pin);
+   const verified=await readAtomicRelease(output);
+   assert.equal(verified.releaseSha256,result.releaseSha256);
+   assert.equal(verified.provenance.wasmSha256,hash(verified.wasm));
+   assert.equal(verified.manifest.wasmSha256,verified.provenance.wasmSha256);
+   assert.equal(verified.manifest.producer.compilerSha256,pin);
+   assert.equal(verified.provenance.sourceSha256,hash(await readFile(source)));
+   assert.equal(verified.manifest.producer.sourceSha256,verified.provenance.sourceSha256);
+   assert.equal(verified.manifest.producer.llvmIrSha256,verified.provenance.llvmIrSha256);
+   assert.equal(verified.provenance.importCount,0);
+   assert.equal((new WebAssembly.Instance(new WebAssembly.Module(verified.wasm))).exports.main(),expected);
+   const state=await inspectAtomicReleaseState(output);
+   assert.equal(state.current,verified.releaseSha256);
+   assert.deepEqual(state.invalid,[]);
+   assert.deepEqual(state.staging,[]);
+   if(previous){
+    assert.notEqual(previous,verified.releaseSha256);
+    assert.ok(state.unreferenced.includes(previous),
+     "previous sealed guest must remain recoverable for in-flight readers");
+   }
+   previous=verified.releaseSha256;
+  }
+  const pointer=await readFile(output+".current.json");
+  await assert.rejects(compileOresToWasm({
+   compiler,source:cases[0][0],output,compilerSha256:"0".repeat(64),
+   environment:"browser",publication:"atomic"
+  }),/compiler binary SHA-256 does not match pinned hash/);
+  assert.deepEqual(await readFile(output+".current.json"),pointer,
+   "rejected compiler must never replace the selected release");
+  assert.equal((new WebAssembly.Instance(
+   new WebAssembly.Module((await readAtomicRelease(output)).wasm))).exports.main(),43n);
+  await assert.rejects(readFile(output),/ENOENT/,
+   "atomic publishing must not leave a legacy executable sidecar");
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
+
 
 test("compiler bridge resists poisoned native SHA-256 prototype methods",{timeout:45000},async()=>{
  const dir=await mkdtemp(join(tmpdir(),"oreslang-sha-bridge-"));
