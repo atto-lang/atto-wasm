@@ -13,7 +13,12 @@ const get=(name)=>args.find(x=>x.startsWith(name+"="))?.slice(name.length+1);
 const mode=get("faultmode"),checkpoint=get("checkpoint");
 const expected=JSON.parse(await readFile("/workspace/payload/expected.json","utf8"));
 const original=expected[0];
-if(mode==="publish"&&modes.has(checkpoint)){
+if((mode==="publish-multi"||mode==="verify-multi")&&
+   (checkpoint==="multi2"||checkpoint==="multi3")){
+ const multi=await import("./qemu-multiwriter-guest.mjs");
+ if(mode==="publish-multi")await multi.publishMulti(checkpoint);
+ else await multi.verifyMulti(checkpoint);
+}else if(mode==="publish"&&modes.has(checkpoint)){
  const selected=await readAtomicRelease(output);
  if(selected.releaseSha256!==original.releaseSha256)throw Error("unexpected initial selected identity");
  const wasm=await readFile("/workspace/payload/artifact-43.wasm");
