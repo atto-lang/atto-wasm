@@ -58,7 +58,59 @@ export class AtomicReleaseCommitUncertainError extends Error {
  }
 }
 const paths=output=>({root:output+".releases",pointer:output+".current.json"});
-const canonical=x=>Buffer.from(JSON.stringify(x)+"\n");
+// Canonical JSON is a pure structural encoding, never a call into caller-
+// supplied or inherited toJSON hooks. JSON.stringify(object) would consult
+// Object.prototype.toJSON and Array.prototype.toJSON even for records whose
+// own keys are closed. This encoder reads only data descriptors and emits
+// the ordinary ECMAScript JSON ordering/escaping for the admitted scalars.
+function canonical(x){
+ function serialize(value,depth){
+  if(depth>16)fail("canonical metadata nesting limit");
+  if(value===null||typeof value==="string"||typeof value==="boolean"||
+      (typeof value==="number"&&Number.isFinite(value)))
+   return JSON.stringify(value);
+  if(!value||typeof value!=="object"||isProxy(value))
+   fail("invalid canonical metadata value");
+  if(Array.isArray(value)){
+   if(Object.getPrototypeOf(value)!==Array.prototype)
+    fail("invalid canonical metadata array prototype");
+   const keys=Reflect.ownKeys(value);
+   const length=Object.getOwnPropertyDescriptor(value,"length")?.value;
+   if(!Number.isSafeInteger(length)||length<0||
+      keys.length!==length+1||keys[keys.length-1]!=="length")
+    fail("invalid canonical metadata array properties");
+   const entries=[];
+   for(let i=0;i<length;i++){
+    if(keys[i]!==String(i))fail("invalid canonical metadata array index");
+    const item=Object.getOwnPropertyDescriptor(value,String(i));
+    if(!item||!Object.hasOwn(item,"value")||!item.enumerable)
+     fail("invalid canonical metadata array element");
+    entries.push(serialize(item.value,depth+1));
+   }
+   return "["+entries.join(",")+"]";
+  }
+  if(![Object.prototype,null].includes(Object.getPrototypeOf(value)))
+   fail("invalid canonical metadata prototype");
+  const keys=Object.keys(value);
+  if(Reflect.ownKeys(value).length!==keys.length)
+   fail("invalid canonical metadata hidden fields");
+  const fields=[];
+  for(const key of keys){
+   const descriptor=Object.getOwnPropertyDescriptor(value,key);
+   if(!descriptor||!descriptor.enumerable||!Object.hasOwn(descriptor,"value"))
+    fail("invalid canonical metadata field");
+   fields.push(JSON.stringify(key)+":"+serialize(descriptor.value,depth+1));
+  }
+  return "{"+fields.join(",")+"}";
+ }
+ return Buffer.from(serialize(x,0)+"\\n");
+}
+// Array.length alone does not make an empty metadata array a closed record:
+// an own toJSON, symbol, non-enumerable capability or accessor would otherwise
+// be silently admitted and might be invoked by future code paths.
+const exactEmptyArray=value=>Array.isArray(value)&&!isProxy(value)&&
+ Object.getPrototypeOf(value)===Array.prototype&&value.length===0&&
+ Reflect.ownKeys(value).length===1&&Reflect.ownKeys(value)[0]==="length";
 // Keep runtime admission aligned with atomic-release-v1.schema.json, which
 // specifies closed records. Digest equality is not a schema/authority check.
 // Closed JSON record admission must reject inherited, hidden, symbol and
@@ -165,11 +217,8 @@ function descriptorFor(wasm,manifest,provenance){
    manifest.wasmBytes!==wasm.length||
    !exactKeys(manifest.memory,["maximumPages"])||
    manifest.memory.maximumPages!==2||
-   !Array.isArray(manifest.imports)||isProxy(manifest.imports)||
-   manifest.imports.length!==0||
-   !Array.isArray(manifest.requiredCapabilities)||
-   isProxy(manifest.requiredCapabilities)||
-   manifest.requiredCapabilities.length!==0||
+   !exactEmptyArray(manifest.imports)||
+   !exactEmptyArray(manifest.requiredCapabilities)||
    manifest.wasmSha256!==digest(wasm)||
    !exactKeys(manifest.producer,["compilerSha256","sourceSha256",
       "llvmIrSha256"])||
