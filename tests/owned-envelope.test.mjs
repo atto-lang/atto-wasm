@@ -624,3 +624,37 @@ test("fractional schema IDs, bounds and maxBytes reject poisoned Number validato
  assert.match(String(boundFailure),/invalid element bound/);
  assert.match(String(budgetFailure),/invalid maxBytes/);
 });
+
+
+test("ABI labels are bounded ASCII independent of RegExp.prototype.test",async()=>{
+ const good={variant:"Compute",fields:{text:"ok",n:42n}};
+ const reference=await encodeMessage(contract,good);
+ const invalid=["9prefix","a-b"," space","é","A".repeat(129)];
+ const original=Object.getOwnPropertyDescriptor(RegExp.prototype,"test");
+ const define=Object.defineProperty;
+ let poisonCalls=0,again,decoded;
+ const rejected=[];
+ try{
+  define(RegExp.prototype,"test",{configurable:true,writable:true,value(){
+   poisonCalls++;return true;
+  }});
+  again=await encodeMessage(contract,good);
+  decoded=await decodeMessage(contract,reference);
+  for(const label of invalid){
+   try{
+    const bad={schemaVersion:1,ownership:"copy",variants:[{
+     id:1,name:label,fields:[]
+    }]};
+    await encodeMessage(bad,{variant:label,fields:{}});
+    rejected[rejected.length]=false;
+   }catch(e){rejected[rejected.length]=String(e).includes("invalid name");}
+  }
+ }finally{
+  if(original)define(RegExp.prototype,"test",original);
+  else delete RegExp.prototype.test;
+ }
+ assert.equal(poisonCalls,0,"ABI validation must not call mutable RegExp.test");
+ assert.deepEqual(again,reference);
+ assert.deepEqual(decoded,good);
+ assert.deepEqual(rejected,[true,true,true,true,true]);
+});
