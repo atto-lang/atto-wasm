@@ -26,6 +26,25 @@ prove termination and prevent stale readers from resuming, **do not
 enable GC**. An unsafe negative-control TLC model deliberately
 reclaims a suspect reader's release and must violate `PinnedPresent`.
 
+### Additional retire-before-reclaim admission model
+
+`formal/AtomicReaderRetention.tla` independently models a two-phase
+reclamation protocol, complementing the lease-fencing model above.
+`PinCurrent` acquires a pin using the same atomic admission authority as
+`Retire`; once retirement is marked, new readers cannot pin that
+release. `Reclaim` may then remove it only after every earlier pin has
+been released. Pins remain conservatively held across process crash and
+restart. A negative-control `UnsafeReclaim` transition must violate
+`PinnedPresent` whenever it deletes a retired release held by a reader.
+
+The two bounded TLA+ models have different purposes: `RetentionLeases`
+specifies **reader identity, suspect leases and externally authorized
+fencing**; `AtomicReaderRetention` specifies **atomic read admission
+relative to retirement and reclamation**. Neither implements a live
+collector, resolves owner-fencing liveness, or allows automatic GC to be
+enabled. Both models must remain green with their unsafe negative
+controls before a future runtime pin/GC implementation can be accepted.
+
 A complete future implementation would require authenticated
 process-instance identifiers, monotonic epochs/fencing tokens, durable
 lease authorization, restart reconciliation, explicit cancellation
