@@ -80,8 +80,8 @@ test("Wasm ABI proof ignores poisoned array push and exported-name decoder metho
  let invocations=0,goodError,badError;
  // Export name has same byte width so the mutated binary remains well formed.
  const wrongExport=new Uint8Array(bounded);
- wrongExport[27]=101;wrongExport[28]=118;
- wrongExport[29]=105;wrongExport[30]=108; // "evil", not "main"
+ wrongExport[29]=101;wrongExport[30]=118;
+ wrongExport[31]=105;wrongExport[32]=108; // "evil", not "main"
  try{
   Object.defineProperty(Array.prototype,"push",{configurable:true,writable:true,
    value(){invocations++;throw Error("poisoned array push")}});
