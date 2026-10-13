@@ -1124,3 +1124,88 @@ test("canonical metadata encoder enforces exact aggregate UTF-8 byte budget",()=
  const longKey={["k".repeat(16385)]:0};
  assert.throws(()=>canonicalReleaseMetadata(longKey),/canonical metadata byte budget/);
 });
+
+
+test("two publishers interleaved before pointer rename select only complete identities",async()=>{
+ const w=await workspace();
+ let resumeFirst=()=>{};
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  let entered;
+  const atBarrier=new Promise(resolve=>{entered=resolve});
+  const releaseBarrier=new Promise(resolve=>{resumeFirst=resolve});
+  const provenanceA={...baseline.provenance,note:"interleave before pointer rename A"};
+  const provenanceB={...baseline.provenance,note:"interleave before pointer rename B"};
+  const a=publishAtomicRelease({
+   output:w.output,wasm:baseline.wasm,manifest:baseline.manifest,
+   provenance:provenanceA,
+   __testBeforePointerRename:async()=>{entered();await releaseBarrier}
+  });
+  await atBarrier;
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256,
+   "a fully installed but unselected release must remain invisible to readers");
+  const b=await publishAtomicRelease({output:w.output,wasm:baseline.wasm,
+   manifest:baseline.manifest,provenance:provenanceB});
+  assert.notEqual(b.releaseSha256,baseline.releaseSha256);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,b.releaseSha256);
+  resumeFirst();
+  const completedA=await a;
+  assert.notEqual(completedA.releaseSha256,b.releaseSha256);
+  const selected=await readAtomicRelease(w.output);
+  assert.equal(selected.releaseSha256,completedA.releaseSha256);
+  assert.equal(selected.provenance.note,provenanceA.note);
+  assert.equal(selected.manifest.producer.sourceSha256,selected.provenance.sourceSha256);
+  assert.equal(execute(selected.wasm),42n);
+  const inventory=await inspectAtomicReleaseState(w.output);
+  assert.deepEqual(inventory.invalid,[]);
+  assert.ok(inventory.unreferenced.includes(b.releaseSha256));
+  assert.ok(inventory.unreferenced.includes(baseline.releaseSha256));
+ }finally{resumeFirst();await cleanup(w.dir)}
+});
+
+test("uncertain writer cannot claim current pointer after competing writer wins",async()=>{
+ const w=await workspace();
+ let resumeFirst=()=>{};
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  let entered;
+  const afterRename=new Promise(resolve=>{entered=resolve});
+  const releaseBarrier=new Promise(resolve=>{resumeFirst=resolve});
+  const provenanceA={...baseline.provenance,note:"interleave after pointer rename A"};
+  const provenanceB={...baseline.provenance,note:"interleave after pointer rename B"};
+  const resultA=publishAtomicRelease({
+   output:w.output,wasm:baseline.wasm,manifest:baseline.manifest,
+   provenance:provenanceA,
+   __testAfterPointerRename:async()=>{
+    entered();
+    await releaseBarrier;
+    throw Error("simulated uncertain pointer-parent sync")
+   }
+  }).then(()=>({unexpectedSuccess:true}),error=>({error}));
+  await afterRename;
+  const selectedA=await readAtomicRelease(w.output);
+  assert.equal(selectedA.provenance.note,provenanceA.note,
+   "writer A must have made its release visible");
+  const b=await publishAtomicRelease({output:w.output,wasm:baseline.wasm,
+   manifest:baseline.manifest,provenance:provenanceB});
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,b.releaseSha256);
+  resumeFirst();
+  const {error,unexpectedSuccess}=await resultA;
+  assert.equal(unexpectedSuccess,undefined);
+  assert.ok(error instanceof AtomicReleaseCommitUncertainError);
+  assert.equal(error.code,"ATOMIC_RELEASE_COMMIT_UNCERTAIN");
+  assert.equal(error.releaseSha256,selectedA.releaseSha256);
+  assert.notEqual(error.releaseSha256,b.releaseSha256);
+  assert.equal(error.mayBePublished,true);
+  const current=await readAtomicRelease(w.output);
+  assert.equal(current.releaseSha256,b.releaseSha256,
+   "an uncertain receipt is not proof that its release remains selected");
+  assert.equal(current.provenance.note,provenanceB.note);
+  assert.equal(execute(current.wasm),42n);
+  const inventory=await inspectAtomicReleaseState(w.output);
+  assert.deepEqual(inventory.invalid,[]);
+  assert.ok(inventory.unreferenced.includes(selectedA.releaseSha256));
+ }finally{resumeFirst();await cleanup(w.dir)}
+});
