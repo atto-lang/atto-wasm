@@ -68,6 +68,10 @@ export class AtomicReleaseCommitUncertainError extends Error {
  }
 }
 const paths=output=>({root:output+".releases",pointer:output+".current.json"});
+function cleanupMessage(error){
+ try{return String(error?.message||error).slice(0,256)}
+ catch{return "cleanup failure (details unavailable)"}
+}
 // Closed descriptor-only encoder reused for legacy and atomic metadata.
 export function canonicalReleaseMetadata(x){
  function serialize(value,depth){
@@ -382,14 +386,21 @@ export async function publishAtomicRelease({
    if(pointerDir)await rm(pointerDir,{recursive:true,force:true});
   }catch(cleanupError){
    if(primaryError){
-    primaryError.cleanupFailure=String(cleanupError?.message||cleanupError).slice(0,256);
+    try{
+     Object.defineProperty(primaryError,"cleanupFailure",{
+      value:cleanupMessage(cleanupError),configurable:true,writable:true,enumerable:true
+     });
+    }catch{/* A frozen or hostile original error must not be replaced. */}
    }else if(committedResult){
     // Durable publication is a success, not an abort. Surface the orphaned
     // temp cleanup as a warning for operator inspection.
-    committedResult.cleanupWarning={
-     code:"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED",
-     message:String(cleanupError?.message||cleanupError).slice(0,256)
-    };
+    try{
+     Object.defineProperty(committedResult,"cleanupWarning",{
+      value:{code:"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED",
+       message:cleanupMessage(cleanupError)},
+      configurable:true,writable:true,enumerable:true
+     });
+    }catch{/* A durable commit remains successful despite warning failure. */}
    }else{
     throw cleanupError;
    }

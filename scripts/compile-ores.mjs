@@ -56,23 +56,50 @@ async function rejectMixedPublication(published,publication){
 // publisher: its publication lock and scratch compilation directory. Neither
 // is permitted to turn an already committed release into a false abort or
 // replace an uncertain-commit receipt with a generic cleanup error.
+// Cleanup receipt handling must not change the original failure or commit outcome.
+function receiptMessage(error){
+ try{return String(error?.message||error).slice(0,256)}
+ catch{return "cleanup failure (details unavailable)"}
+}
+function appendReceipt(array,value){
+ Object.defineProperty(array,String(array.length),{
+  value,writable:true,configurable:true,enumerable:true
+ });
+}
 function preserveCleanupFailure(error,scope,cleanupError){
- if(error&&typeof error==="object"){
-  error.cleanupFailures??=[];
-  error.cleanupFailures.push({
-   scope,message:String(cleanupError?.message||cleanupError).slice(0,256)
-  });
- }
+ try{
+  if(!error||typeof error!=="object")return;
+  let list=Object.getOwnPropertyDescriptor(error,"cleanupFailures")?.value;
+  if(!Array.isArray(list)){
+   list=[];
+   Object.defineProperty(error,"cleanupFailures",{
+    value:list,writable:true,configurable:true,enumerable:true
+   });
+  }
+  appendReceipt(list,{scope,message:receiptMessage(cleanupError)});
+ }catch{/* Never override a frozen or hostile primary error. */}
 }
 function attachCleanupWarning(result,scope,cleanupError){
- const warning={
-  code:"ARTIFACT_POST_COMMIT_CLEANUP_FAILED",scope,
-  message:String(cleanupError?.message||cleanupError).slice(0,256)
- };
- if(!result.cleanupWarnings)
-  result.cleanupWarnings=result.cleanupWarning?[result.cleanupWarning]:[];
- result.cleanupWarnings.push(warning);
- result.cleanupWarning??=warning;
+ try{
+  const warning={
+   code:"ARTIFACT_POST_COMMIT_CLEANUP_FAILED",scope,
+   message:receiptMessage(cleanupError)
+  };
+  let list=Object.getOwnPropertyDescriptor(result,"cleanupWarnings")?.value;
+  if(!Array.isArray(list)){
+   list=[];
+   const original=Object.getOwnPropertyDescriptor(result,"cleanupWarning")?.value;
+   if(original)appendReceipt(list,original);
+   Object.defineProperty(result,"cleanupWarnings",{
+    value:list,writable:true,configurable:true,enumerable:true
+   });
+  }
+  appendReceipt(list,warning);
+  if(!Object.hasOwn(result,"cleanupWarning"))
+   Object.defineProperty(result,"cleanupWarning",{
+    value:warning,writable:true,configurable:true,enumerable:true
+   });
+ }catch{/* Report best-effort warning without turning durable success into abort. */}
 }
 async function withPublicationLock(published,publication,callback,afterLockCleanup){
  const lock=published+".publication.lock";
