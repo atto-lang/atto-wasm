@@ -512,3 +512,43 @@ test("native byte brands reject forged typed-array and shared-buffer prototypes"
  const roundtrip=await decodeMessage(contract,valid);
  assert.deepEqual(roundtrip,{variant:"Batch",fields});
 });
+
+
+test("UTF-8 preflight and wire decoding ignore poisoned text prototype methods",async()=>{
+ const value={variant:"Compute",fields:{text:"safe 🚀",n:42n}};
+ const baseline=await encodeMessage(contract,value);
+ const entries=[
+  [String.prototype,"charCodeAt",()=>0],
+  [TextEncoder.prototype,"encode",()=>new Uint8Array(0)],
+  [TextDecoder.prototype,"decode",()=>"FORGED"]
+ ];
+ const originals=entries.map(([owner,key])=>Object.getOwnPropertyDescriptor(owner,key));
+ let poisonCalls=0,after,decoded,oversizedFailure;
+ try{
+  for(let i=0;i<entries.length;i++){
+   const [owner,key,wrong]=entries[i];
+   Object.defineProperty(owner,key,{configurable:true,writable:true,value:function(...args){
+    poisonCalls++;return wrong(...args);
+   }});
+  }
+  after=await encodeMessage(contract,value);
+  decoded=await decodeMessage(contract,baseline);
+  try{
+   // 3000 astral code points are 12000 UTF-8 bytes but only 6000
+   // JavaScript UTF-16 code units. A forged charCodeAt must not reduce the
+   // preflight to 6000 bytes and trigger a premature TextEncoder allocation.
+   await encodeMessage(contract,{variant:"Compute",fields:{
+    text:"🚀".repeat(3000),n:42n}},{maxBytes:6550});
+  }catch(e){oversizedFailure=e;}
+ }finally{
+  for(let i=entries.length-1;i>=0;i--){
+   const [owner,key]=entries[i];
+   if(originals[i])Object.defineProperty(owner,key,originals[i]);
+   else delete owner[key];
+  }
+ }
+ assert.equal(poisonCalls,0,"mutable text-prototype methods must never execute");
+ assert.deepEqual(after,baseline,"poisoned prototypes must not change ORM1 bytes");
+ assert.deepEqual(decoded,value,"poisoned decoder must not replace guest text");
+ assert.match(String(oversizedFailure),/byte budget exceeded/);
+});
