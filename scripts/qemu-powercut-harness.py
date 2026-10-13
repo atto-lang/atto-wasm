@@ -203,7 +203,8 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
     if not data:
      break
     output=(output+data)[-MAX_LOG:]
-    if (publish_boundary_observed(output,mode,checkpoint) if mode.endswith("publish")\n        else wanted.encode() in output):
+    if (publish_boundary_observed(output,mode,checkpoint) if mode.endswith("publish")
+        else wanted.encode() in output):
      success=True
      if mode.endswith("publish"):
       # QEMU process dies abruptly. Do NOT issue ACPI poweroff, sync, a
