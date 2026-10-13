@@ -83,5 +83,23 @@ class QemuRecoveryReceiptTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"missing"):
             qemu.validate_cold_boot_receipt(data,HOOK,0)
 
+    def test_two_writer_recovery_requires_committed_43(self):
+        good=transcript("multi2")
+        self.assertIn("value=43",qemu.validate_cold_boot_receipt(good,"multi2",0))
+        for wrong in (42,45):
+            with self.subTest(wrong=wrong):
+                with self.assertRaisesRegex(RuntimeError,"two-publisher"):
+                    qemu.validate_cold_boot_receipt(
+                        good.replace("value=43 ",f"value={wrong} "),"multi2",0)
+
+    def test_three_writer_uncertain_rename_admits_only_43_or_45(self):
+        base=transcript("multi3")
+        for accepted in (43,45):
+            with self.subTest(accepted=accepted):
+                value=base.replace("value=43 ",f"value={accepted} ")
+                self.assertIn(f"value={accepted}",qemu.validate_cold_boot_receipt(value,"multi3",0))
+        with self.assertRaisesRegex(RuntimeError,"three-publisher"):
+            qemu.validate_cold_boot_receipt(base.replace("value=43 ","value=42 "),"multi3",0)
+
 if __name__=="__main__":
     unittest.main()
