@@ -103,7 +103,7 @@ function canonical(x){
   }
   return "{"+fields.join(",")+"}";
  }
- return Buffer.from(serialize(x,0)+"\\n");
+ return Buffer.from(serialize(x,0)+String.fromCharCode(10));
 }
 // Array.length alone does not make an empty metadata array a closed record:
 // an own toJSON, symbol, non-enumerable capability or accessor would otherwise
