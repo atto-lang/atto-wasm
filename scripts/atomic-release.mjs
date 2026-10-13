@@ -146,7 +146,10 @@ async function safeFile(path,limit){
    fsConstants.O_NONBLOCK);
  try{
   const stat=await handle.stat();
-  if(!stat.isFile()||stat.size>limit)fail("invalid file");
+  // Hard links outside this directory alias the same inode but are not
+  // covered by the sealed namespace. Reject before interpreting any bytes.
+  if(!stat.isFile()||stat.size>limit||stat.nlink!==1)
+   fail("invalid file");
   const chunks=[];
   let length=0;
   for(;;){
