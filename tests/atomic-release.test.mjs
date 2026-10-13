@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
-import {spawnSync} from "node:child_process";
+import {spawn,spawnSync} from "node:child_process";
 import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename,symlink,unlink,link} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -1375,4 +1375,82 @@ test("verified pointers and payloads reject external hard links",async()=>{
     "removing external alias restores valid sealed identity");
   }
  }finally{await cleanup(w.dir)}
+});
+
+
+test("independent processes racing as publishers and readers never select partial releases",
+ {timeout:90000},async()=>{
+ const w=await workspace();
+ let child=null;
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  const moduleURL=new URL("../scripts/atomic-release.mjs",import.meta.url).href;
+  // A separate Node process acts as both a reader and a real independent
+  // publisher, with no mocked transport, hook or host-side callback.
+  const childSource=[
+   "import {readAtomicRelease,publishAtomicRelease} from "+JSON.stringify(moduleURL)+";",
+   "const output="+JSON.stringify(w.output)+";",
+   "const initial=await readAtomicRelease(output);",
+   "process.stdout.write('READY\\n');",
+   "await new Promise(resolve=>process.stdin.once('data',resolve));",
+   "async function check(){",
+   " const r=await readAtomicRelease(output);",
+   " if(new WebAssembly.Instance(new WebAssembly.Module(r.wasm)).exports.main()!==42n)",
+   "  throw Error('reader observed wrong Wasm');",
+   " if(!r.manifest||r.manifest.producer.sourceSha256!==r.provenance.sourceSha256)",
+   "  throw Error('reader observed mixed provenance');",
+   "}",
+   "for(let i=0;i<15;i++)await check();",
+   "const x=await publishAtomicRelease({output,wasm:initial.wasm,",
+   " manifest:initial.manifest,provenance:{...initial.provenance,note:'external-writer'}});",
+   "for(let i=0;i<15;i++)await check();",
+   "process.stdout.write('PUBLISHED '+x.releaseSha256+'\\n');"
+  ].join("\n");
+  child=spawn(process.execPath,["--input-type=module","--eval",childSource],
+   {stdio:["pipe","pipe","pipe"]});
+  let stdout="",stderr="";
+  const done=new Promise((resolve,reject)=>{
+   child.once("error",reject);
+   child.once("exit",(code,signal)=>{
+    if(code===0)resolve();
+    else reject(Error("external release process failed: "+JSON.stringify({
+     code,signal,stderr:stderr.slice(0,2000),stdout:stdout.slice(0,2000)
+    })));
+   });
+  });
+  child.stdout.on("data",chunk=>{stdout+=chunk.toString("utf8")});
+  child.stderr.on("data",chunk=>{stderr+=chunk.toString("utf8")});
+  await Promise.race([
+   new Promise(resolve=>{
+    const checkReady=()=>{if(stdout.includes("READY\\n"))resolve();
+     else child.stdout.once("data",checkReady)};
+    checkReady();
+   }),
+   done.then(()=>{throw Error("child completed without readiness handshake")})
+  ]);
+  const parents=[];
+  for(let i=0;i<4;i++)
+   parents[parents.length]=publishAtomicRelease({
+    output:w.output,wasm:baseline.wasm,manifest:baseline.manifest,
+    provenance:{...baseline.provenance,note:"parent-writer-"+i}
+   });
+  child.stdin.write("GO\\n");
+  await Promise.all(parents);
+  for(let i=0;i<10;i++){
+   const current=await readAtomicRelease(w.output);
+   assert.equal(execute(current.wasm),42n);
+   assert.equal(current.manifest.producer.sourceSha256,current.provenance.sourceSha256);
+  }
+  await done;
+  assert.match(stdout,/PUBLISHED [0-9a-f]{64}/);
+  const external=stdout.match(/PUBLISHED ([0-9a-f]{64})/)[1];
+  const inventory=await inspectAtomicReleaseState(w.output);
+  assert.deepEqual(inventory.invalid,[]);
+  assert.ok(inventory.current===external||inventory.unreferenced.includes(external));
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{
+  if(child&&!child.killed)child.kill();
+  await cleanup(w.dir);
+ }
 });
