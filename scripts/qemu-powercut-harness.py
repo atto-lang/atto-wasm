@@ -147,6 +147,11 @@ def validate_cold_boot_receipt(serial_output,checkpoint,returncode):
   raise RuntimeError("guest verifier reported a nonzero process result")
  if lines.count("GUEST_PROCESS_CLEAN_FINISH")!=1:
   raise RuntimeError("guest verifier did not complete cleanly")
+ # init emits the clean-finish marker ONLY after Node has returned from
+ # verification. A preexisting or reordered marker is not evidence that
+ # this receipt's verifier ran through successful process teardown.
+ if lines.index("GUEST_PROCESS_CLEAN_FINISH")<=lines.index(markers[0]):
+  raise RuntimeError("guest clean-finish marker preceded recovery receipt")
  return markers[0]
 
 
