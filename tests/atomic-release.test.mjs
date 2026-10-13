@@ -1214,3 +1214,40 @@ test("uncertain writer cannot claim current pointer after competing writer wins"
   assert.ok(inventory.unreferenced.includes(selectedA.releaseSha256));
  }finally{resumeFirst();await cleanup(w.dir)}
 });
+
+test("post-import poisoned own-property checks cannot execute metadata getters",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const previous=await readAtomicRelease(w.output);
+  const pointer=await readFile(w.output+".current.json");
+  let getters=0,poisonCalled=0;
+  const poisoned={...previous.provenance};
+  Object.defineProperty(poisoned,"note",{enumerable:true,configurable:true,
+   get(){getters++;throw Error("metadata getter executed")}});
+  const originalHasOwn=Object.getOwnPropertyDescriptor(Object,"hasOwn");
+  const originalKeys=Object.getOwnPropertyDescriptor(Object,"keys");
+  const originalOwnKeys=Object.getOwnPropertyDescriptor(Reflect,"ownKeys");
+  let attempt;
+  try{
+   Object.defineProperty(Object,"hasOwn",{configurable:true,writable:true,
+    value(){poisonCalled++;return true}});
+   Object.defineProperty(Object,"keys",{configurable:true,writable:true,
+    value(){poisonCalled++;return []}});
+   Object.defineProperty(Reflect,"ownKeys",{configurable:true,writable:true,
+    value(){poisonCalled++;return []}});
+   // Admission is synchronous until the first filesystem await. Restore
+   // intrinsic globals before Node's asynchronous test machinery resumes.
+   attempt=publishAtomicRelease({output:w.output,wasm:previous.wasm,
+    manifest:previous.manifest,provenance:poisoned});
+  }finally{
+   Object.defineProperty(Object,"hasOwn",originalHasOwn);
+   Object.defineProperty(Object,"keys",originalKeys);
+   Object.defineProperty(Reflect,"ownKeys",originalOwnKeys);
+  }
+  await assert.rejects(attempt,/invalid producer record/);
+  assert.equal(getters,0,"metadata accessors must not be invoked");
+  assert.equal(poisonCalled,0,"publisher must use captured own-key intrinsics");
+  assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+ }finally{await cleanup(w.dir)}
+});
