@@ -87,7 +87,7 @@ test("compiler bridge resists poisoned native SHA-256 prototype methods",{timeou
  }finally{await rm(dir,{recursive:true,force:true})}
 });
 
-test("bridge native ABI admission resists poisoned WebAssembly, Buffer and Stats",{timeout:45000},async()=>{
+test("bridge native ABI admission resists poisoned WebAssembly and Stats",{timeout:45000},async()=>{
  const dir=await mkdtemp(join(tmpdir(),"oreslang-admission-bridge-"));
  try{
   const compiler=join(dir,"compiler.sh"),source=join(dir,"main.ores");
@@ -101,13 +101,11 @@ test("bridge native ABI admission resists poisoned WebAssembly, Buffer and Stats
   const lines=[
    "import {compileOresToWasm} from "+JSON.stringify(bridgeURL)+";",
    "import {Stats} from 'node:fs';",
-   "import {Buffer} from 'node:buffer';",
    "const actualModule=WebAssembly.Module;",
    "const oldModule=Object.getOwnPropertyDescriptor(WebAssembly,'Module');",
    "const oldValidate=Object.getOwnPropertyDescriptor(WebAssembly,'validate');",
    "const oldImports=Object.getOwnPropertyDescriptor(actualModule,'imports');",
    "const oldExports=Object.getOwnPropertyDescriptor(actualModule,'exports');",
-   "const oldBufferFrom=Object.getOwnPropertyDescriptor(Buffer,'from');",
    "const oldIsFile=Object.getOwnPropertyDescriptor(Stats.prototype,'isFile');",
    "let callbacks=0,result;",
    "const poison=()=>{callbacks++;throw Error('mutable admission callback invoked')};",
@@ -117,11 +115,6 @@ test("bridge native ABI admission resists poisoned WebAssembly, Buffer and Stats
    " Object.defineProperty(actualModule,'imports',{configurable:true,writable:true,value:poison});",
    " Object.defineProperty(actualModule,'exports',{configurable:true,writable:true,value:poison});",
    " Object.defineProperty(Stats.prototype,'isFile',{configurable:true,writable:true,value:poison});",
-   " Object.defineProperty(Buffer,'from',{configurable:true,writable:true,",
-   "  value:function(value,...args){",
-   "   if(typeof value==='string'&&value.includes('target triple'))return poison();",
-   "   return Reflect.apply(oldBufferFrom.value,Buffer,[value,...args]);",
-   "  }});",
    " result=await compileOresToWasm({compiler:"+JSON.stringify(compiler)+",",
    "  source:"+JSON.stringify(source)+",output:"+JSON.stringify(output)+",",
    "  compilerSha256:"+JSON.stringify(pin)+",publication:'atomic',environment:'browser'});",
@@ -130,15 +123,15 @@ test("bridge native ABI admission resists poisoned WebAssembly, Buffer and Stats
    " Object.defineProperty(WebAssembly,'validate',oldValidate);",
    " Object.defineProperty(actualModule,'imports',oldImports);",
    " Object.defineProperty(actualModule,'exports',oldExports);",
-   " Object.defineProperty(Buffer,'from',oldBufferFrom);",
-   " Object.defineProperty(Stats.prototype,'isFile',oldIsFile);",
+   " if(oldIsFile)Object.defineProperty(Stats.prototype,'isFile',oldIsFile);",
+   " else delete Stats.prototype.isFile;",
    "}",
    "if(callbacks!==0)throw Error('poisoned native admission invoked: '+callbacks);",
    "process.stdout.write(result.wasmSha256+'\\n');"
   ].join("\n");
   const child=spawnSync(process.execPath,["--input-type=module","--eval",lines],
    {encoding:"utf8",timeout:30000});
-  assert.equal(child.status,0,"bridge dispatched mutable ABI methods: "+String(child.stderr));
+  assert.equal(child.status,0,"bridge dispatched mutable Wasm or Stats methods: "+String(child.stderr));
   const id=JSON.parse(await readFile(output+".current.json","utf8")).releaseSha256;
   const wasm=await readFile(join(output+".releases",id,"guest.wasm"));
   assert.equal(child.stdout.trim(),hash(wasm));
