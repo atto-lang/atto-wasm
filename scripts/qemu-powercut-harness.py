@@ -124,6 +124,8 @@ def validate_cold_boot_receipt(serial_output,checkpoint,returncode):
  if not match:
   raise RuntimeError("malformed cold-boot recovery receipt")
  value=int(match.group(1))
+ if checkpoint in CHECKPOINTS and value==45:
+  raise RuntimeError("single-publisher fixture cannot recover third-writer release")
  if checkpoint in ("__testAfterReleaseRename","__testAfterReleaseInstall",
                    "__testBeforePointerRename") and value!=42:
   raise RuntimeError("pre-rename receipt selected wrong release")
