@@ -585,3 +585,42 @@ test("decoded message ownership survives poisoned Object.freeze and defineProper
  assert.deepEqual(decoded.fields.items,["hello"]);
  assert.equal(decoded.fields.blob[0],1,"binary bytes are copied, not frozen");
 });
+
+
+test("fractional schema IDs, bounds and maxBytes reject poisoned Number validators",async()=>{
+ const message={variant:"Compute",fields:{text:"safe",n:42n}};
+ const expected=await encodeMessage(contract,message);
+ const invalidId={schemaVersion:1,ownership:"copy",variants:[{
+  id:1.5,name:"Fraction",fields:[{name:"x",type:"i64"}]
+ }]};
+ const invalidBound={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Fraction",fields:[{name:"x",type:{list:{element:"i64",maxLength:2.5}}}]
+ }]};
+ const originalInteger=Object.getOwnPropertyDescriptor(Number,"isInteger");
+ const originalSafe=Object.getOwnPropertyDescriptor(Number,"isSafeInteger");
+ const define=Object.defineProperty;
+ let calls=0,encoded,decoded,idFailure,boundFailure,budgetFailure;
+ try{
+  define(Number,"isInteger",{configurable:true,writable:true,
+   value(){calls++;return true;}});
+  define(Number,"isSafeInteger",{configurable:true,writable:true,
+   value(){calls++;return true;}});
+  encoded=await encodeMessage(contract,message);
+  decoded=await decodeMessage(contract,expected);
+  try{await encodeMessage(invalidId,{variant:"Fraction",fields:{x:1n}});}
+  catch(e){idFailure=e;}
+  try{await encodeMessage(invalidBound,{variant:"Fraction",fields:{x:[1n]}});}
+  catch(e){boundFailure=e;}
+  try{await encodeMessage(contract,message,{maxBytes:80.5});}
+  catch(e){budgetFailure=e;}
+ }finally{
+  define(Number,"isInteger",originalInteger);
+  define(Number,"isSafeInteger",originalSafe);
+ }
+ assert.equal(calls,0,"mutable Number validators must not execute");
+ assert.deepEqual(encoded,expected);
+ assert.deepEqual(decoded,message);
+ assert.match(String(idFailure),/invalid ID/);
+ assert.match(String(boundFailure),/invalid element bound/);
+ assert.match(String(budgetFailure),/invalid maxBytes/);
+});
