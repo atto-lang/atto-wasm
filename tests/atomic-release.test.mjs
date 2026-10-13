@@ -1617,3 +1617,40 @@ test("WebAssembly admission is invariant under post-import static method poisoni
   assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
  }finally{await cleanup(w.dir)}
 });
+
+
+test("world-writable release root and pointer parent are never trusted publication namespaces",
+ {timeout:45000},async()=>{
+ const w=await workspace();
+ const root=w.output+".releases";
+ let baseline=null;
+ try{
+  baseline=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const trusted=await readAtomicRelease(w.output);
+  const kwargs={output:w.output,wasm:trusted.wasm,
+   manifest:trusted.manifest,provenance:trusted.provenance};
+  const originalPointer=await readFile(w.output+".current.json");
+  try{
+   await chmod(root,0o777);
+   await assert.rejects(readAtomicRelease(w.output),/invalid release root/);
+   await assert.rejects(publishAtomicRelease(kwargs),
+    /release root symlink or unsafe permissions/);
+   assert.deepEqual(await readFile(w.output+".current.json"),originalPointer);
+  }finally{await chmod(root,0o700)}
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
+  try{
+   await chmod(w.dir,0o777);
+   await assert.rejects(readAtomicRelease(w.output),
+    /unsafe atomic pointer parent directory/);
+   await assert.rejects(publishAtomicRelease(kwargs),
+    /unsafe atomic pointer parent directory/);
+   assert.deepEqual(await readFile(w.output+".current.json"),originalPointer);
+  }finally{await chmod(w.dir,0o700)}
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
+ }finally{
+  // Restoration happens even on assertion failures.
+  await chmod(root,0o700).catch(()=>{});
+  await chmod(w.dir,0o700).catch(()=>{});
+  await cleanup(w.dir);
+ }
+});
