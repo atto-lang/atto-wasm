@@ -104,3 +104,28 @@ test("1000 seeded records match native JSON bytes without inherited callbacks",(
    "seeded record "+i);
  }
 });
+
+
+test("dense array index serialization ignores poisoned global String and safe-integer gate",()=>{
+ const array=[0,"safe",null,true,{x:4},["nested"]];
+ const expected='[0,"safe",null,true,{"x":4},["nested"]]\\n';
+ const originalString=Object.getOwnPropertyDescriptor(globalThis,"String");
+ const originalSafeInteger=Object.getOwnPropertyDescriptor(Number,"isSafeInteger");
+ let calls=0,actual;
+ const poison=()=>{calls++;throw Error("mutable array serialization intrinsic invoked")};
+ try{
+  Object.defineProperty(globalThis,"String",{
+   configurable:true,writable:true,value:poison});
+  Object.defineProperty(Number,"isSafeInteger",{
+   configurable:true,writable:true,value:poison});
+  // Do not call test assertions or error formatting until globals are restored.
+  actual=encode(array);
+ }finally{
+  if(originalString)Object.defineProperty(globalThis,"String",originalString);
+  else delete globalThis.String;
+  if(originalSafeInteger)Object.defineProperty(Number,"isSafeInteger",originalSafeInteger);
+  else delete Number.isSafeInteger;
+ }
+ assert.equal(actual.toString("utf8"),expected);
+ assert.equal(calls,0,"array metadata serialization must use captured intrinsics");
+});
