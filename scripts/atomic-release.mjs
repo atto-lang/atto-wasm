@@ -12,7 +12,13 @@ import {inspectWasmBytes} from "./inspect-core-memory.mjs";
 import {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
 export {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
 const digest=b=>createHash("sha256").update(b).digest("hex");
-const hex=x=>typeof x==="string"&&/^[0-9a-f]{64}$/.test(x);
+// Capture native RegExp.exec: captured .test() alone would still dispatch
+// through a mutable prototype .exec and could bypass admission checks.
+const intrinsicApply=Reflect.apply;
+const intrinsicRegExpExec=RegExp.prototype.exec;
+const regexMatches=(pattern,value)=>
+ intrinsicApply(intrinsicRegExpExec,pattern,[value])!==null;
+const hex=x=>typeof x==="string"&&regexMatches(/^[0-9a-f]{64}$/,x);
 // JSON Schema maxLength counts Unicode code points, not UTF-16 units.
 // Stop scanning at max+1; never allocate a second copy of caller text.
 const intrinsicCharCodeAt=String.prototype.charCodeAt;
@@ -20,9 +26,9 @@ function boundedCodePoints(value,min,max){
  if(typeof value!=="string")return false;
  let n=0;
  for(let i=0;i<value.length;i++){
-  const ch=intrinsicCharCodeAt.call(value,i);
+  const ch=intrinsicApply(intrinsicCharCodeAt,value,[i]);
   if(ch>=0xd800&&ch<=0xdbff&&i+1<value.length){
-   const low=intrinsicCharCodeAt.call(value,i+1);
+   const low=intrinsicApply(intrinsicCharCodeAt,value,[i+1]);
    if(low>=0xdc00&&low<=0xdfff)i++;
   }
   if(++n>max)return false;
@@ -51,9 +57,9 @@ function ownedWasmSnapshot(wasm){
  if(isProxy(wasm))fail("invalid Wasm bytes");
  let backing,offset,length;
  try{
-  backing=nativeBuffer.call(wasm);
-  offset=nativeOffset.call(wasm);
-  length=nativeLength.call(wasm);
+  backing=intrinsicApply(nativeBuffer,wasm,[]);
+  offset=intrinsicApply(nativeOffset,wasm,[]);
+  length=intrinsicApply(nativeLength,wasm,[]);
  }catch{fail("invalid Wasm bytes")}
  // Native brand checks cannot be evaded by swapping a view/backing prototype.
  // `instanceof` is insufficient: a Uint16Array can masquerade as Uint8Array,
@@ -149,7 +155,7 @@ async function safeFile(path,limit){
    if(bytesRead===0)break;
    length+=bytesRead;
    if(length>limit)fail("oversized file");
-   chunks.push(chunk.subarray(0,bytesRead));
+   chunks[chunks.length]=chunk.subarray(0,bytesRead);
   }
   return Buffer.concat(chunks,length);
  }finally{await handle.close()}
@@ -182,7 +188,7 @@ function descriptorFor(wasm,manifest,provenance){
     !hex(provenance.llvmIrSha256)||!hex(provenance.wasmSha256)||
     !nativeIsSafeInteger(provenance.wasmBytes)||provenance.wasmBytes!==wasm.length||
     typeof provenance.exportName!=="string"||
-    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(provenance.exportName)||
+    !regexMatches(/^[A-Za-z_][A-Za-z0-9_]*$/,provenance.exportName)||
     provenance.importCount!==0||
     !boundedCodePoints(provenance.clangVersion,1,256)||
     !boundedCodePoints(provenance.note,0,1024))
@@ -205,7 +211,7 @@ function descriptorFor(wasm,manifest,provenance){
    (manifest.environment!=="browser"&&manifest.environment!=="edge-js"&&
      manifest.environment!=="edge-wasi")||
    typeof manifest.entry!=="string"||manifest.entry.length>128||
-   !/^[A-Za-z_][A-Za-z0-9_]*$/.test(manifest.entry)||
+   !regexMatches(/^[A-Za-z_][A-Za-z0-9_]*$/,manifest.entry)||
    manifest.entry!==provenance.exportName||
    manifest.wasmBytes!==wasm.length||
    !exactKeys(manifest.memory,["maximumPages"])||
@@ -394,11 +400,11 @@ export async function inspectAtomicReleaseState(output){
  if(entries.length>4096)fail("recovery scan exceeds entry budget");
  const staging=[],unreferenced=[],invalid=[];
  for(const entry of entries){
-  if(entry.name.startsWith(".staging-")){staging.push(entry.name);continue}
-  if(!hex(entry.name)){invalid.push(entry.name);continue}
+  if(entry.name.startsWith(".staging-")){staging[staging.length]=entry.name;continue}
+  if(!hex(entry.name)){invalid[invalid.length]=entry.name;continue}
   if(entry.name===current)continue;
-  try{await verifyDir(join(root,entry.name),entry.name);unreferenced.push(entry.name)}
-  catch{invalid.push(entry.name)}
+  try{await verifyDir(join(root,entry.name),entry.name);unreferenced[unreferenced.length]=entry.name}
+  catch{invalid[invalid.length]=entry.name}
  }
  return {current,pointerError,staging,unreferenced,invalid};
 }
