@@ -27,9 +27,21 @@ jobs:
           set -euo pipefail
           read -r -a packages <<< "$(python3 scripts/verify-native-toolchain-lock.py install-args clang lld)"
           sudo apt-get update
+          # Pin the actual signed guest kernel artifact, not a virtual metapackage
+          # whose apt index can lag the exact kernel package. Never float to
+          # an arbitrary newer kernel: reproducible QEMU evidence requires an
+          # explicitly reviewed ABI/version pair.
+          kernel_package='linux-image-6.8.0-146-generic'
+          kernel_version='6.8.0-146.146'
+          if ! apt-cache madison "$kernel_package" | awk '{print $3}' | grep -Fxq "$kernel_version"; then
+            echo "::error::Pinned guest kernel package unavailable in this runner's apt index"
+            apt-cache policy "$kernel_package" linux-image-virtual
+            exit 1
+          fi
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            "${packages[@]}" qemu-system-x86 busybox-static e2fsprogs \
-            'linux-image-virtual=6.8.0-146.146'
+            "${packages[@]}" qemu-system-x86 busybox-static e2fsprogs initramfs-tools \
+            "$kernel_package=$kernel_version"
+          test "$(dpkg-query -W -f='${Version}' "$kernel_package")" = "$kernel_version"
           python3 scripts/verify-native-toolchain-lock.py verify clang lld
           test -s /boot/vmlinuz-6.8.0-146-generic
           test -s /boot/initrd.img-6.8.0-146-generic
