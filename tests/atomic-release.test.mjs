@@ -1654,3 +1654,74 @@ test("world-writable release root and pointer parent are never trusted publicati
   await cleanup(w.dir);
  }
 });
+
+test("release digesting uses captured SHA-256 methods despite post-import poisoning",
+ {timeout:45000},async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  const priorPointer=await readFile(w.output+".current.json");
+  const hashProto=Object.getPrototypeOf(Object.getPrototypeOf(createHash("sha256")));
+  const oldUpdate=Object.getOwnPropertyDescriptor(hashProto,"update");
+  const oldDigest=Object.getOwnPropertyDescriptor(hashProto,"digest");
+  let callbacks=0,publishing;
+  try{
+   Object.defineProperty(hashProto,"update",{configurable:true,writable:true,
+    value(){callbacks++;return this}});
+   Object.defineProperty(hashProto,"digest",{configurable:true,writable:true,
+    value(){callbacks++;return "f".repeat(64)}});
+   // Admission digests occur before the first async filesystem operation.
+   publishing=publishAtomicRelease({output:w.output,wasm:baseline.wasm,
+    manifest:baseline.manifest,provenance:{
+     ...baseline.provenance,note:"captured digest-method integrity"
+    }});
+  }finally{
+   Object.defineProperty(hashProto,"update",oldUpdate);
+   Object.defineProperty(hashProto,"digest",oldDigest);
+  }
+  const receipt=await publishing;
+  assert.equal(callbacks,0,"release hashing must never invoke poisoned Hash methods");
+  assert.notDeepEqual(await readFile(w.output+".current.json"),priorPointer);
+  const selected=await readAtomicRelease(w.output);
+  assert.equal(selected.releaseSha256,receipt.releaseSha256);
+  assert.equal(selected.provenance.note,"captured digest-method integrity");
+  assert.equal(execute(selected.wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("verified release reader ignores poisoned SHA-256 prototype methods",
+ {timeout:45000},async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const selected=await readAtomicRelease(w.output);
+  const moduleURL=new URL("../scripts/atomic-release.mjs",import.meta.url).href;
+  const childSource=[
+   "import {readAtomicRelease} from "+JSON.stringify(moduleURL)+";",
+   "import {createHash} from 'node:crypto';",
+   "const output="+JSON.stringify(w.output)+";",
+   "const hashProto=Object.getPrototypeOf(Object.getPrototypeOf(createHash('sha256')));",
+   "const originalUpdate=Object.getOwnPropertyDescriptor(hashProto,'update');",
+   "const originalDigest=Object.getOwnPropertyDescriptor(hashProto,'digest');",
+   "let calls=0,identity;",
+   "try{",
+   " Object.defineProperty(hashProto,'update',{configurable:true,writable:true,",
+   "  value(){calls++;return this}});",
+   " Object.defineProperty(hashProto,'digest',{configurable:true,writable:true,",
+   "  value(){calls++;return 'f'.repeat(64)}});",
+   " identity=(await readAtomicRelease(output)).releaseSha256;",
+   "}finally{",
+   " Object.defineProperty(hashProto,'update',originalUpdate);",
+   " Object.defineProperty(hashProto,'digest',originalDigest);",
+   "}",
+   "if(calls!==0)throw Error('poisoned SHA callbacks executed: '+calls);",
+   "process.stdout.write(identity+'\\n');"
+  ].join("\n");
+  const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
+   {encoding:"utf8",timeout:30000});
+  assert.equal(child.status,0,"reader invoked poisoned hashing: "+String(child.stderr));
+  assert.equal(child.stdout.trim(),selected.releaseSha256);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,selected.releaseSha256);
+ }finally{await cleanup(w.dir)}
+});
