@@ -1380,7 +1380,7 @@ test("verified pointers and payloads reject external hard links",async()=>{
 
 
 test("independent processes racing as publishers and readers never select partial releases",
- {timeout:90000},async()=>{
+ {timeout:120000},async()=>{
  const w=await workspace();
  let child=null;
  try{
@@ -1409,7 +1409,7 @@ test("independent processes racing as publishers and readers never select partia
    "process.stdout.write('PUBLISHED '+x.releaseSha256+'\\n');"
   ].join("\n");
   child=spawn(process.execPath,["--input-type=module","--eval",childSource],
-   {stdio:["pipe","pipe","pipe"]});
+   {stdio:["pipe","pipe","pipe"],timeout:105000,killSignal:"SIGKILL"});
   let stdout="",stderr="";
   const done=new Promise((resolve,reject)=>{
    child.once("error",reject);
@@ -1422,14 +1422,24 @@ test("independent processes racing as publishers and readers never select partia
   });
   child.stdout.on("data",chunk=>{stdout+=chunk.toString("utf8")});
   child.stderr.on("data",chunk=>{stderr+=chunk.toString("utf8")});
-  await Promise.race([
+  // Test-runner timeout is only a report: it does not cancel a child or
+  // pending Promise. Put an independent deadline on every IPC phase.
+  async function within(label,promise,ms){
+   let timer;
+   try{
+    return await Promise.race([promise,new Promise((_,reject)=>{
+     timer=setTimeout(()=>reject(Error(label+" deadline exceeded")),ms);
+    })]);
+   }finally{clearTimeout(timer)}
+  }
+  await within("child READY handshake",Promise.race([
    new Promise(resolve=>{
     const checkReady=()=>{if(stdout.includes("READY\n"))resolve();
      else child.stdout.once("data",checkReady)};
     checkReady();
    }),
    done.then(()=>{throw Error("child completed without readiness handshake")})
-  ]);
+  ]),15000);
   const parents=[];
   for(let i=0;i<4;i++)
    parents[parents.length]=publishAtomicRelease({
@@ -1437,13 +1447,13 @@ test("independent processes racing as publishers and readers never select partia
     provenance:{...baseline.provenance,note:"parent-writer-"+i}
    });
   child.stdin.write("GO\n");
-  await Promise.all(parents);
+  await within("concurrent publisher phase",Promise.all(parents),70000);
   for(let i=0;i<10;i++){
    const current=await readAtomicRelease(w.output);
    assert.equal(execute(current.wasm),42n);
    assert.equal(current.manifest.producer.sourceSha256,current.provenance.sourceSha256);
   }
-  await done;
+  await within("external writer completion",done,15000);
   assert.match(stdout,/PUBLISHED [0-9a-f]{64}/);
   const external=stdout.match(/PUBLISHED ([0-9a-f]{64})/)[1];
   const inventory=await inspectAtomicReleaseState(w.output);
@@ -1451,7 +1461,8 @@ test("independent processes racing as publishers and readers never select partia
   assert.ok(inventory.current===external||inventory.unreferenced.includes(external));
   assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
  }finally{
-  if(child&&!child.killed)child.kill();
+  if(child&&child.exitCode===null&&child.signalCode===null)
+   child.kill("SIGKILL");
   await cleanup(w.dir);
  }
 });
