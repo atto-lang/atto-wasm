@@ -66,3 +66,14 @@ jobs:
           fi
           grep -q "Invariant PinnedPresent is violated" /tmp/unsafe-retention.log || { cat /tmp/unsafe-retention.log; exit 1; }
           echo "PASS: expired but unfenced reader pin blocks release reclamation"
+      - name: Prove retirement closes read admission before reclamation
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -deadlock -cleanup -config formal/AtomicReaderRetention.cfg formal/AtomicReaderRetention.tla
+      - name: Reject collection of an already pinned retired identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if java -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -deadlock -cleanup -config formal/AtomicReaderRetentionUnsafe.cfg formal/AtomicReaderRetention.tla > /tmp/unsafe-retired.log 2>&1; then
+            echo "Unsafe retire-then-reclaim model unexpectedly passed"; cat /tmp/unsafe-retired.log; exit 1
+          fi
+          grep -q "Invariant PinnedPresent is violated" /tmp/unsafe-retired.log || { cat /tmp/unsafe-retired.log; exit 1; }
+          echo "PASS: a retired release still pinned by a reader cannot be collected"
