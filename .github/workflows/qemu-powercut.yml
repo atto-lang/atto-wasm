@@ -32,7 +32,7 @@ jobs:
           # admit an arbitrary latest/HWE kernel or reuse the host runner kernel.
           available="$(apt-cache madison linux-image-virtual | awk -F '|' '{gsub(/^ +| +$/, "", $2); print $2}')"
           kernel_package_version=""
-          for candidate in 6.8.0-146.146 6.8.0-139.139; do
+          for candidate in 6.8.0-147.147 6.8.0-146.146 6.8.0-139.139; do
             if printf '%s\n' "$available" | grep -Fxq "$candidate"; then
               kernel_package_version="$candidate"
               break
