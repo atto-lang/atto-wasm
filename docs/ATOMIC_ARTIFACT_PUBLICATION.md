@@ -69,11 +69,20 @@ garbage collection requires a separate quiescence-aware design.
   directory `fsync`, this implementation fails rather than promising a
   durable commit. Hardware controllers, filesystem bugs, or an actual
   power interruption are *not* modeled by ordinary unit tests.
-- The current implementation assumes a private, trusted same-filesystem
-  directory, and cannot guarantee integrity against writable storage,
-  malicious processes with access to the release tree, filesystem corruption
-  or SHA-256 collisions. A process crash may leave an unreferenced sealed
-  directory or partial staging tree.
+- The current implementation requires the **output/pointer parent directory**
+  and release root to be real (not symlinked) directories with no group or
+  other write permissions. This applies to already-existing directories too:
+  the publisher fails closed rather than reusing a shared-writable namespace.
+  Place the output under a private directory such as a mode-0700 build/artifact
+  directory, **not directly under a mode-1777 shared temporary directory**.
+  A chmod to mode 0777 does not make an output acceptable even if a sticky bit
+  is set. Mode checks are necessary but are not a sandbox for malicious code
+  running as the same filesystem principal.
+- The implementation assumes a private, trusted same-filesystem hierarchy
+  and cannot guarantee integrity against malicious processes with access to
+  its owner credentials, writable storage below the release tree, filesystem
+  corruption or SHA-256 collisions. A process crash may leave an unreferenced
+  sealed directory or partial staging tree.
 - `inspectAtomicReleaseState(output)` reports the current verified release,
   stale staging directories, older independently verified releases and
   invalid entries without modifying storage. These diagnostics support
