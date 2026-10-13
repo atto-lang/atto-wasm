@@ -842,3 +842,67 @@ test("fault matrix brackets both directory fsync and pointer rename without fals
    "the previously selected reader-pinnable release must be retained");
  }finally{await cleanup(w.dir)}
 });
+
+
+test("hidden toJSON and symbol fields on empty authority arrays are rejected before invocation",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const current=await readAtomicRelease(w.output);
+  const pointer=await readFile(w.output+".current.json");
+  let called=0;
+  for(const field of ["imports","requiredCapabilities"]){
+   const variants=[];
+   const hidden=[];
+   Object.defineProperty(hidden,"toJSON",{configurable:true,
+    value(){called++;throw Error("forbidden hidden array serializer")}});
+   variants.push(hidden);
+   const symbolic=[];
+   Object.defineProperty(symbolic,Symbol("authority"),{value:"privileged",enumerable:false});
+   variants.push(symbolic);
+   const nonEnumerable=[];
+   Object.defineProperty(nonEnumerable,"hiddenCapability",{value:"network",enumerable:false});
+   variants.push(nonEnumerable);
+   const subclass=Object.setPrototypeOf([],Object.create(Array.prototype));
+   variants.push(subclass);
+   for(const injected of variants){
+    const manifest={...current.manifest,[field]:injected};
+    await assert.rejects(publishAtomicRelease({output:w.output,
+      wasm:current.wasm,manifest,provenance:current.provenance
+    }),/inconsistent manifest provenance/);
+    assert.equal(called,0,"hidden array authority must never run");
+    assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+   }
+  }
+ }finally{await cleanup(w.dir)}
+});
+
+test("canonical sealed bytes never invoke inherited toJSON hooks",async()=>{
+ const w=await workspace();
+ let callbackCount=0;
+ const oldObject=Object.getOwnPropertyDescriptor(Object.prototype,"toJSON");
+ const oldArray=Object.getOwnPropertyDescriptor(Array.prototype,"toJSON");
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const old=await readAtomicRelease(w.output);
+  Object.defineProperty(Object.prototype,"toJSON",{configurable:true,
+   value(){callbackCount++;throw Error("inherited object toJSON invoked")}});
+  Object.defineProperty(Array.prototype,"toJSON",{configurable:true,
+   value(){callbackCount++;throw Error("inherited array toJSON invoked")}});
+  const newlyPublished=await publishAtomicRelease({
+    output:w.output,wasm:old.wasm,
+    manifest:old.manifest,
+    provenance:{...old.provenance,note:"prototype pollution canonicalization regression"}
+  });
+  const verified=await readAtomicRelease(w.output);
+  assert.equal(verified.releaseSha256,newlyPublished.releaseSha256);
+  assert.equal(execute(verified.wasm),42n);
+  assert.equal(callbackCount,0,"canonical release metadata must never execute inherited serializers");
+ }finally{
+  if(oldObject)Object.defineProperty(Object.prototype,"toJSON",oldObject);
+  else delete Object.prototype.toJSON;
+  if(oldArray)Object.defineProperty(Array.prototype,"toJSON",oldArray);
+  else delete Array.prototype.toJSON;
+  await cleanup(w.dir);
+ }
+});
