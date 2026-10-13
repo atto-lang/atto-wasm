@@ -699,6 +699,50 @@ test("dangling publication symlink entries never bypass mixed-mode exclusion",as
 });
 
 
+test("publisher snapshots native typed-array storage without subclass getter authority",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const original=await readAtomicRelease(w.output);
+  const pinnedPointer=await readFile(w.output+".current.json");
+  let traps=0;
+  class AdversarialWasm extends Uint8Array{
+   get length(){traps++;return 0}
+   get byteLength(){traps++;return 0}
+   get byteOffset(){traps++;throw Error("subclass offset executed")}
+   get buffer(){traps++;throw Error("subclass buffer executed")}
+   [Symbol.iterator](){traps++;throw Error("subclass iterator executed")}
+  }
+  // The full bytes are still present in the intrinsic Uint8Array view.
+  // Buffer.from(adversarial) alone would incorrectly copy zero bytes.
+  const adversarial=new AdversarialWasm(original.wasm);
+  const published=await publishAtomicRelease({
+   output:w.output,wasm:adversarial,
+   provenance:original.provenance,manifest:original.manifest
+  });
+  assert.equal(published.releaseSha256,original.releaseSha256);
+  assert.equal(traps,0,"no untrusted subclass property may influence the snapshot");
+  assert.deepEqual(await readFile(w.output+".current.json"),pinnedPointer);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+
+  // Forged prototypes carry no native byte-view internal slots.
+  const counterfeit=Object.create(Uint8Array.prototype);
+  await assert.rejects(publishAtomicRelease({
+   output:w.output,wasm:counterfeit,provenance:original.provenance,
+   manifest:original.manifest
+  }),/invalid Wasm bytes/);
+  if(typeof SharedArrayBuffer!=="undefined"){
+   const shared=new Uint8Array(new SharedArrayBuffer(original.wasm.byteLength));
+   shared.set(original.wasm);
+   await assert.rejects(publishAtomicRelease({
+    output:w.output,wasm:shared,provenance:original.provenance,
+    manifest:original.manifest
+   }),/invalid Wasm bytes/);
+  }
+  assert.deepEqual(await readFile(w.output+".current.json"),pinnedPointer);
+ }finally{await cleanup(w.dir)}
+});
+
 test("publisher rejects Proxy-backed metadata and Wasm without triggering traps",async()=>{
  const w=await workspace();
  try{

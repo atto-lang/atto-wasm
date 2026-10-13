@@ -20,6 +20,30 @@ function boundedCodePoints(value,min,max){
  return n>=min;
 }
 const fail=x=>{throw Error("invalid atomic Oreslang release: "+x)};
+const arrayViewProto=Object.getPrototypeOf(Uint8Array.prototype);
+const nativeBuffer=Object.getOwnPropertyDescriptor(arrayViewProto,"buffer").get;
+const nativeOffset=Object.getOwnPropertyDescriptor(arrayViewProto,"byteOffset").get;
+const nativeLength=Object.getOwnPropertyDescriptor(arrayViewProto,"byteLength").get;
+// Never ask an untrusted typed-array subclass for .length, .buffer or
+// Symbol.iterator. Buffer.from(view) consults subclass .length and can copy a
+// different number of bytes than the native Uint8Array backing view.
+function ownedWasmSnapshot(wasm){
+ if(isProxy(wasm))fail("invalid Wasm bytes");
+ let backing,offset,length;
+ try{
+  backing=nativeBuffer.call(wasm);
+  offset=nativeOffset.call(wasm);
+  length=nativeLength.call(wasm);
+ }catch{fail("invalid Wasm bytes")}
+ if(!(wasm instanceof Uint8Array)||
+    (typeof SharedArrayBuffer!=="undefined"&&backing instanceof SharedArrayBuffer))
+  fail("invalid Wasm bytes");
+ if(length<8||length>16777216)fail("Wasm budget");
+ // Newly constructed intrinsic view has no caller-controlled prototype
+ // overrides; it is copied synchronously before metadata validation.
+ return Buffer.from(new Uint8Array(backing,offset,length));
+}
+
 // A pointer rename is the visibility/linearization point. If the subsequent
 // directory sync fails, the pointer might already be visible or durable.
 // Never translate that condition into an ordinary "nothing published" error.
@@ -215,9 +239,9 @@ export async function publishAtomicRelease({
  __testAfterPointerRename,__testBeforeCleanup
 }){
  if(typeof output!=="string"||!output)fail("missing output");
- if(isProxy(wasm)||!(wasm instanceof Uint8Array))fail("invalid Wasm bytes");
+ 
  const destination=resolve(output),{root,pointer}=paths(destination);
- const bytes=Buffer.from(wasm);
+ const bytes=ownedWasmSnapshot(wasm);
  const {seal,releaseSha256}=descriptorFor(bytes,manifest,provenance);
  const provenanceBytes=canonical(provenance);
  const manifestBytes=manifest===null?null:canonical(manifest);

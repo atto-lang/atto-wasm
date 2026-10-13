@@ -1,0 +1,67 @@
+name: QEMU ext4 cold-boot atomic publication qualification
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  qemu-powercut:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify complete source tree
+        run: bash scripts/verify-source-tree.sh
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Reject forged or incomplete guest recovery transcripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_qemu_recovery_receipts.py' -v
+      - name: Install version-locked fixture Clang and disposable QEMU guest kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r -a packages <<< "$(python3 scripts/verify-native-toolchain-lock.py install-args clang lld)"
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            "${packages[@]}" qemu-system-x86 busybox-static e2fsprogs \
+            'linux-image-virtual=6.8.0-146.146'
+          python3 scripts/verify-native-toolchain-lock.py verify clang lld
+          test -s /boot/vmlinuz-6.8.0-146-generic
+          test -s /boot/initrd.img-6.8.0-146-generic
+          # Ubuntu kernel files are root-readonly (0600).
+          sudo cp /boot/vmlinuz-6.8.0-146-generic "$RUNNER_TEMP/ores-qemu-vmlinuz"
+          sudo chmod 0644 "$RUNNER_TEMP/ores-qemu-vmlinuz"
+          echo "QEMU_KERNEL_SHA256=$(sha256sum "$RUNNER_TEMP/ores-qemu-vmlinuz" | cut -d' ' -f1)"
+          echo "QEMU_INITRD_SHA256=$(sha256sum /boot/initrd.img-6.8.0-146-generic | cut -d' ' -f1)"
+      - name: Abruptly kill five ext4 VMs and verify each cold boot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/qemu-powercut-harness.py \
+            "$RUNNER_TEMP/ores-qemu-vmlinuz" /boot/initrd.img-6.8.0-146-generic
+          python3 -m json.tool build/qemu-powercut-evidence.json > /dev/null
+          python3 - <<'PY'
+          import json,pathlib,subprocess
+          info=json.loads(pathlib.Path('build/qemu-powercut-evidence.json').read_text())
+          wanted=['__testAfterReleaseRename','__testAfterReleaseInstall',
+                  '__testBeforePointerRename','__testAfterPointerRename','__testBeforeCleanup']
+          tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip()
+          if info.get('sourceTree')!=tree or info.get('checkpoints')!=wanted or (
+              info.get('verifiedColdBoots')!=5 or info.get('uncleanHypervisorStops')!=5):
+              raise SystemExit('QEMU evidence mismatches exact source tree or complete five-case matrix')
+          print('PASS_QEMU_FINAL_EVIDENCE_EXACT_TREE',tree)
+          PY
+          sha256sum build/qemu-powercut-evidence.json
+      - name: Preserve observed VM power-cut qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qemu-powercut-evidence
+          path: build/qemu-powercut-evidence.json
+          if-no-files-found: warn
+          retention-days: 30
