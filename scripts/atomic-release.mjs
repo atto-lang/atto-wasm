@@ -175,7 +175,18 @@ export async function publishAtomicRelease({
   const destinationDir=join(root,releaseSha256);
   try{await rename(stage,destinationDir)}
   catch(error){
-   if(!["EEXIST","ENOTEMPTY"].includes(error.code))throw error;
+   const darwinCollision=process.platform==="darwin"&&
+    ["EACCES","EPERM"].includes(error.code);
+   if(!["EEXIST","ENOTEMPTY"].includes(error.code)&&!darwinCollision)throw error;
+   // Darwin can report EACCES when replacing an identical sealed (0500)
+   // directory. A permission error is never evidence that it was installed.
+   // Require an existing real directory; the content verifier below must still
+   // admit every byte before the pointer can advance.
+   if(darwinCollision){
+    let installed;
+    try{installed=await lstat(destinationDir)}catch{throw error}
+    if(!installed.isDirectory()||installed.isSymbolicLink())throw error;
+   }
   }
   // Reject preexisting conflicting/replaced content, even if name matches.
   await verifyDir(destinationDir,releaseSha256);
