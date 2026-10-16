@@ -57,7 +57,7 @@ test("scalar Wasm import admission ignores comments and literals, rejects real i
  for(const source of accepts)assert.doesNotThrow(()=>assertImportFreeSource(encoder.encode(source)));
  for(const path of ["./local","../parent","@/root","pkg:alias/source",".hidden/file","my/module"])
   assert.throws(()=>assertImportFreeSource(encoder.encode('import fnc run from "'+path+'";')),/verified native import graph/);
- for(const bad of ["/* unterminated", "'unterminated", '"unterminated', '"bad\\\\"])
+ for(const bad of ["/* unterminated", "'unterminated", '"unterminated', String.fromCharCode(34)+"bad"+String.fromCharCode(92)])
   assert.throws(()=>assertImportFreeSource(encoder.encode(bad)),/unterminated/);
  assert.throws(()=>assertImportFreeSource(Uint8Array.of(0xc0,0xaf)),/encoded|UTF-8/i);
 });
