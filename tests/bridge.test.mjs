@@ -5,6 +5,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createHash} from "node:crypto";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
+import {assertImportFreeSource} from "../scripts/import-admission.mjs";
 const hash=b=>createHash("sha256").update(b).digest("hex");
 test("real Clang wasm32 bridge accepts verified IR and records hashes (stub compiler only)",async()=>{
  const dir=await mkdtemp(join(tmpdir(),"oreslang-wasm-bridge-test-"));
@@ -39,5 +40,37 @@ test("real native Oreslang compiler integration, opt-in and never simulated",{
   assert.equal(r.importCount,0);
   const bytes=await readFile(output);
   assert.equal((new WebAssembly.Instance(new WebAssembly.Module(bytes))).exports.main(),42n);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
+
+
+test("scalar Wasm import admission ignores comments and literals, rejects real imports",()=>{
+ const encoder=new TextEncoder();
+ const accepts=[
+  "pub fnc main():int { return 42; }",
+  "// import fnc fake from \"@/ghost\";\\npub fnc main():int{return 42;}",
+  "/* import fake /* nested import */ end */ pub fnc main():int{return 42;}",
+  "pub fnc main():int { let s=\"import fnc x from pkg:y/z\"; return 42; }",
+  "pub fnc main():int { let s='import from'; return 42; }",
+  "pub fnc main():int { let imported=42; return imported; }"
+ ];
+ for(const source of accepts)assert.doesNotThrow(()=>assertImportFreeSource(encoder.encode(source)));
+ for(const path of ["./local","../parent","@/root","pkg:alias/source",".hidden/file","my/module"])
+  assert.throws(()=>assertImportFreeSource(encoder.encode('import fnc run from "'+path+'";')),/verified native import graph/);
+ for(const bad of ["/* unterminated", "'unterminated", '"unterminated', '"bad\\\\"])
+  assert.throws(()=>assertImportFreeSource(encoder.encode(bad)),/unterminated/);
+ assert.throws(()=>assertImportFreeSource(Uint8Array.of(0xc0,0xaf)),/encoded|UTF-8/i);
+});
+test("stub compiler cannot publish Wasm from import-bearing source",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"oreslang-wasm-import-reject-"));
+ try {
+  const compiler=join(dir,"stub.sh"),source=join(dir,"source.ores"),output=join(dir,"guest.wasm");
+  await writeFile(compiler,"#!/bin/sh\\nprintf 'define i64 @main() { ret i64 42 }\\\\n'\\n",{mode:0o700});
+  await writeFile(source,'import fnc helper from "@/lib/helper";\\npub fnc main():int{return 42;}\\n');
+  await assert.rejects(
+    ()=>compileOresToWasm({compiler,source,output}),
+    /verified native import graph/
+  );
+  await assert.rejects(()=>readFile(output),/ENOENT/);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
