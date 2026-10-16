@@ -9,6 +9,7 @@ import {readFile,writeFile,mkdir,mkdtemp,rm,rename,realpath,stat} from "node:fs/
 import {dirname,resolve,isAbsolute,join,basename} from "node:path";
 import {fileURLToPath} from "node:url";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
+import {assertImportFreeSource} from "./import-admission.mjs";
 import {inspectWasmBytes} from "./inspect-core-memory.mjs";
 import {publishAtomicRelease} from "./atomic-release.mjs";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
@@ -111,6 +112,9 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  await rejectMixedPublication(published,publication);
  const [sourceBytes,compilerBytes]=await Promise.all([readFile(sourcePath),readFile(compilerPath)]);
  if(sourceBytes.length>MAX_SOURCE_BYTES)throw Error("source exceeds 1 MiB compiler bridge budget");
+ // Imports cannot be resolved against the single-file scalar source snapshot.
+ // Enforce this before invoking even a compiler that falsely accepts them.
+ assertImportFreeSource(sourceBytes);
  if(compilerBytes.length>MAX_COMPILER_BYTES)throw Error("compiler exceeds 256 MiB executable budget");
  const actualCompilerHash=sha(compilerBytes);
  if(compilerSha256!==undefined&&compilerSha256!==actualCompilerHash)throw Error("compiler binary SHA-256 does not match pinned hash");
