@@ -10,7 +10,7 @@ until its own parser, resolver and linker/runtime pass the positive tests.
 1. `./x` and `../x` resolve relative to the importing source. Bare names
    such as `.hidden/x` or `..backup/x` use configured search roots instead.
 2. `+/x` (not `+x` or experimental `@/x`) is confined lexically to the nearest `.ores.pkg.toml` root,
-   rejects missing manifests, missing sources and `..` escape; it never
+   rejects missing manifests, missing sources and every `..` component (including in-root traversal); it never
    falls through to ambient search paths.
 3. `pkg:alias/x` requires an explicitly declared zed-pkg dependency alias;
    it never initiates package installation. Unknown aliases and invalid
