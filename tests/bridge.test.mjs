@@ -48,7 +48,7 @@ test("scalar Wasm import admission ignores comments and literals, rejects real i
  const encoder=new TextEncoder();
  const accepts=[
   "pub fnc main():int { return 42; }",
-  "// import fnc fake from \"@/ghost\";\\npub fnc main():int{return 42;}",
+  ["// import fnc fake from \"@/ghost\";","pub fnc main():int{return 42;}"].join(String.fromCharCode(10)),
   "/* import fake /* nested import */ end */ pub fnc main():int{return 42;}",
   "pub fnc main():int { let s=\"import fnc x from pkg:y/z\"; return 42; }",
   "pub fnc main():int { let s='import from'; return 42; }",
@@ -65,8 +65,8 @@ test("stub compiler cannot publish Wasm from import-bearing source",async()=>{
  const dir=await mkdtemp(join(tmpdir(),"oreslang-wasm-import-reject-"));
  try {
   const compiler=join(dir,"stub.sh"),source=join(dir,"source.ores"),output=join(dir,"guest.wasm");
-  await writeFile(compiler,"#!/bin/sh\\nprintf 'define i64 @main() { ret i64 42 }\\\\n'\\n",{mode:0o700});
-  await writeFile(source,'import fnc helper from "@/lib/helper";\\npub fnc main():int{return 42;}\\n');
+  await writeFile(compiler,["#!/bin/sh","printf \"define i64 @main() { ret i64 42 }\""].join(String.fromCharCode(10)),{mode:0o700});
+  await writeFile(source,['import fnc helper from "@/lib/helper";','pub fnc main():int{return 42;}'].join(String.fromCharCode(10)));
   await assert.rejects(
     ()=>compileOresToWasm({compiler,source,output}),
     /verified native import graph/
