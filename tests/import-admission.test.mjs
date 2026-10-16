@@ -5,7 +5,7 @@ const bytes = text => new TextEncoder().encode(text);
 
 const accepted = [
   'fnc main():int{return 42;}',
-  '// import fnc x from "@/bad";\nfnc main():int{return 42;}',
+  '// import fnc x from "+/bad";\nfnc main():int{return 42;}',
   '/* import */ fnc main():int{return 42;}',
   '/* import /* nested import */ */ fnc main():int{return 42;}',
   '"import fnc x from pkg:org/dep"',
@@ -19,7 +19,7 @@ const accepted = [
 for (const [i, source] of accepted.entries())
   test("non-import lexical source " + i, () => assert.doesNotThrow(() => check(bytes(source))));
 
-const forms = ['@/root','pkg:dep/file','./sibling','../parent','.hidden/file',
+const forms = ['+/root','+root','@/root','pkg:dep/file','./sibling','../parent','.hidden/file',
   '..backup/mod','module','common/util','C:\\foo'];
 for (const form of forms)
   test("reject import " + form, () => assert.throws(
@@ -36,7 +36,7 @@ for (const encoded of [[0xc0,0xaf],[0xff],[0xe2,0x82],[0xed,0xa0,0x80]])
     assert.throws(() => check(Uint8Array.from(encoded)), /encoded|UTF-8|valid/i));
 
 test("CR-only line comment cannot hide live import", () => {
-  assert.throws(() => check(bytes('// allowed comment\rimport fnc x from "@/secret";')),
+  assert.throws(() => check(bytes('// allowed comment\rimport fnc x from "+/secret";')),
     /verified native import graph/);
   assert.doesNotThrow(() => check(bytes('// import from ignored\rfnc main():int{return 42;}')));
 });
