@@ -8,14 +8,19 @@
  * nested block comments. Malformed UTF-8/comments/strings also fail closed.
  */
 export function assertImportFreeSource(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length > 1024 * 1024)
+    throw Error("Oreslang scalar source must be bytes within the 1 MiB admission budget");
   const source = new TextDecoder("utf-8", {fatal: true}).decode(bytes);
+  if (source.includes("\0")) throw Error("Oreslang source contains NUL byte");
   let i = 0;
   const identStart = c => /[A-Za-z_]/.test(c);
   const identPart = c => /[A-Za-z0-9_]/.test(c);
   while (i < source.length) {
     if (source.startsWith("//", i)) {
-      i = source.indexOf("\n", i + 2);
-      if (i < 0) break;
+      // Treat CR and LF as line terminators. Skipping only LF can hide
+      // a live import after a CR-only comment from the admission gate.
+      i += 2;
+      while (i < source.length && source[i] !== "\r" && source[i] !== "\n") i++;
       continue;
     }
     if (source.startsWith("/*", i)) {
