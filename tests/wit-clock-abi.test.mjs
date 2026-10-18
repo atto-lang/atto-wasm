@@ -6,7 +6,7 @@ import {readFile} from "node:fs/promises";
 // pinned wit-parser and component ABI execution, not regex-only proof.
 test("host WIT clock uses Component Model f64, not obsolete float64",async()=>{
  const source=await readFile(new URL("../wit/oreslang-host.wit",import.meta.url),"utf8");
- assert.match(source,/clock-ms:\\s*func\\(\\)\\s*->\\s*f64;/);
- assert.doesNotMatch(source,/\\bfloat64\\b/);
- assert.match(source,/world\\s+oreslang-runtime/);
+ assert.match(source,/clock-ms:\s*func\(\)\s*->\s*f64;/);
+ assert.doesNotMatch(source,/\bfloat64\b/);
+ assert.match(source,/world\s+oreslang-runtime/);
 });
