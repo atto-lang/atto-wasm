@@ -186,27 +186,81 @@ test("a sparse list cannot bypass the global zero-byte value visit budget",async
  }),/sparse array\/list element/);
 });
 
+test("schema contracts never inherit authority, including deeply nested list bounds",async()=>{
+ const input={variant:"Compute",fields:{text:"x",n:42n}};
+ const missing={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Compute",fields:[{name:"text",type:{list:{element:"string"}}}]
+ }]};
+ // In particular, an inherited maxLength may appear valid to bound().
+ Object.defineProperty(Object.prototype,"maxLength",{configurable:true,value:3});
+ let pending;
+ try{pending=encodeMessage(missing,input);}
+ finally{delete Object.prototype.maxLength;}
+ await assert.rejects(pending,/invalid list shape/);
 
-test("sparse tuple descriptors never hash missing element types as null",async()=>{
- const holes=new Array(1);
  const schema={schemaVersion:1,ownership:"copy",variants:[{
-  id:1,name:"Tuple",fields:[{name:"value",type:{tuple:holes}}]
+  id:1,name:"Empty",fields:[{name:"x",type:{enum:[{id:1,name:"None",payload:null}]}}]
  }]};
- await assert.rejects(encodeMessage(schema,{
-  variant:"Tuple",fields:{value:[[]]}
- }),/sparse tuple descriptor/);
- await assert.rejects(decodeMessage(schema,Uint8Array.of(0)),/sparse tuple descriptor/);
+ const ownValue={variant:"Empty",fields:{x:{variant:"None",value:null}}};
+ const bytes=await encodeMessage(schema,ownValue);
+ assert.equal((await decodeMessage(schema,bytes)).fields.x.value,null);
+ Object.defineProperty(Object.prototype,"value",{configurable:true,value:null});
+ try{pending=encodeMessage(schema,{variant:"Empty",fields:{x:{variant:"None"}}});}
+ finally{delete Object.prototype.value;}
+ await assert.rejects(pending,/invalid enum value shape/);
 });
-test("sparse tuple payloads cannot skip zero-byte nested elements",async()=>{
- const schema={schemaVersion:1,ownership:"copy",variants:[{
-  id:1,name:"Tuple",fields:[{name:"value",type:{tuple:[{tuple:[]}]}}]
+
+test("schema node arrays must have dense own indices, including empty byte layouts",async()=>{
+ const msg={variant:"Single",fields:{value:2n}};
+ const valid={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Single",fields:[{name:"value",type:"i64"}]
  }]};
- for(const value of [new Array(1)]){
-  await assert.rejects(encodeMessage(schema,{
-   variant:"Tuple",fields:{value}
-  }),/sparse tuple element/);
+ const enc=await encodeMessage(valid,msg);
+ const sparseVariants={...valid,variants:new Array(1)};
+ const sparseFields={...valid,variants:[{...valid.variants[0],fields:new Array(1)}]};
+ const sparseTuple={...valid,variants:[{...valid.variants[0],fields:[
+  {name:"value",type:{tuple:new Array(1)}}
+ ]}]};
+ const sparseEnum={...valid,variants:[{...valid.variants[0],fields:[
+  {name:"value",type:{enum:new Array(1)}}
+ ]}]};
+ for(const [bad,diagnostic] of [
+  [sparseVariants,/sparse variants/],
+  [sparseFields,/sparse fields/],
+  [sparseTuple,/sparse tuple types/],
+  [sparseEnum,/sparse enum variants/]
+ ]){
+  await assert.rejects(encodeMessage(bad,msg),diagnostic);
+  await assert.rejects(decodeMessage(bad,enc),diagnostic);
  }
- const dense={variant:"Tuple",fields:{value:[[]]}};
- const encoded=await encodeMessage(schema,dense);
- assert.deepEqual(await decodeMessage(schema,encoded),dense);
+});
+
+test("an accessor cannot redefine schema hash fields during normalization",async()=>{
+ let reads=0;
+ const list={element:"i64"};
+ Object.defineProperty(list,"maxLength",{enumerable:true,configurable:true,
+  get(){reads++;return 1;}});
+ const schema={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Accessor",fields:[{name:"v",type:{list}}]
+ }]};
+ await assert.rejects(encodeMessage(schema,{variant:"Accessor",fields:{v:[1n]}}),/invalid list shape/);
+ assert.equal(reads,0,"accessor must never run in ABI normalization");
+});
+
+
+test("hidden or symbol-bearing schema keys cannot bypass closed ABI shape",async()=>{
+ const msg={variant:"Compute",fields:{text:"safe",n:42n}};
+ const hidden={...contract};
+ Object.defineProperty(hidden,"unsafeGrant",{value:true,enumerable:false});
+ const symbolic={...contract};
+ Object.defineProperty(symbolic,Symbol("unsafeGrant"),{value:true,enumerable:false});
+ const nested={...contract,variants:contract.variants.map(v=>({...v,fields:v.fields.map(f=>({...f}))}))};
+ Object.defineProperty(nested.variants[0].fields[0],Symbol("capability"),{value:"net"});
+ for(const bad of [hidden,symbolic,nested])
+  await assert.rejects(encodeMessage(bad,msg),/invalid (contract|field) shape/);
+ const valid=await encodeMessage(contract,msg);
+ const fieldMessage={variant:"Compute",fields:{text:"safe",n:42n}};
+ Object.defineProperty(fieldMessage.fields,"hidden",{value:"bad",enumerable:false});
+ await assert.rejects(encodeMessage(contract,fieldMessage),/invalid message fields shape/);
+ assert.deepEqual(await decodeMessage(contract,valid),msg);
 });

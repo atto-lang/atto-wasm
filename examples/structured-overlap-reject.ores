@@ -6,6 +6,6 @@ fnc inspect(borrow mut Box one, borrow Box two): int {
   return one.b;
 }
 pub fnc main(): int {
-  let Box box = new Box();
+  let mut Box box = new Box();
   return inspect(rt borrow mut box, rt borrow box);
 }
