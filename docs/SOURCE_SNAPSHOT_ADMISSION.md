@@ -67,3 +67,8 @@ toolchain, source-import graph or a hostile output directory. The caller must
 own and protect the output directory and explicitly trust or attest those
 external dependencies. A successful host-side test is not evidence of full
 source-compiled Oreslang actor execution or malicious-compiler isolation.
+## Source byte-identity gate
+
+The experimental standalone .ores bridge must compile a fresh private scratch copy of source bytes already hashed for the artifact's `producer.sourceSha256`. Previously the bridge hashed the original pathname and then invoked `oreslang-llvmc` using that pathname, leaving a filesystem TOCTOU race. Source renames or edits during compiler execution must no longer invalidate its provenance claim.
+
+This v1 path supports standalone source only. Graph imports, compiler-executable provenance, and separately linked native dependencies require independent exact-tree validation; a scratch snapshot is **not** signed source-to-binary attestation. The bridge now also stages and executes a private byte-identical snapshot of the compiler executable: the reported compiler SHA-256 describes the binary handed to the OS for execution, not a mutable source pathname. This is a standalone executable check, not attestation of transitive libraries, the operating system, Clang/LLD, the compiler's source tree or any runtime-resolved packages. Compilation must fail closed when a compiler distribution cannot run safely from an isolated staging location. Run the included mutation-race regression plus actual native compiler fixture checks before merge.

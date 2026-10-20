@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oreslang.dev/schemas/atomic-release-v1.schema.json",
+  "title": "Oreslang atomic content-addressed release wire contracts",
+  "description": "Validate each on-disk JSON object against one of $defs Pointer, Seal, Manifest, Provenance. Cross-file equality and executable ABI are checked separately by the verified release reader.",
+  "$defs": {
+    "Pointer": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "releaseSha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "releaseSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "Seal": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "type",
+        "fileHashes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "type": {
+          "const": "oreslang.atomic-release-v1"
+        },
+        "fileHashes": {
+          "type": "object",
+          "required": [
+            "wasm",
+            "manifest",
+            "provenance"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "wasm": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "manifest": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "provenance": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "Manifest": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "artifactType",
+        "target",
+        "environment",
+        "backend",
+        "entry",
+        "wasmSha256",
+        "wasmBytes",
+        "imports",
+        "requiredCapabilities",
+        "memory",
+        "producer"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "artifactType": {
+          "const": "oreslang.core-wasm.i64-v1"
+        },
+        "target": {
+          "const": "wasm32"
+        },
+        "environment": {
+          "enum": [
+            "browser",
+            "edge-js",
+            "edge-wasi"
+          ]
+        },
+        "backend": {
+          "const": "wasm"
+        },
+        "entry": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "maxLength": 128
+        },
+        "wasmSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "wasmBytes": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 16777216
+        },
+        "imports": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "requiredCapabilities": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "memory": {
+          "type": "object",
+          "required": [
+            "maximumPages"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "maximumPages": {
+              "const": 2
+            }
+          }
+        },
+        "producer": {
+          "type": "object",
+          "required": [
+            "compilerSha256",
+            "sourceSha256",
+            "llvmIrSha256"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "compilerSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "sourceSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "llvmIrSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "Provenance": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "kind",
+        "compilerSha256",
+        "sourceSha256",
+        "llvmIrSha256",
+        "wasmSha256",
+        "exportName",
+        "wasmBytes",
+        "importCount",
+        "clangVersion",
+        "note"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "llvm-ores-to-wasm32-core-experimental"
+        },
+        "compilerSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sourceSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "llvmIrSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "wasmSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "exportName": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "wasmBytes": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 16777216
+        },
+        "importCount": {
+          "const": 0
+        },
+        "clangVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    }
+  }
+}
