@@ -4,8 +4,8 @@
  * There is no fallback or mock compiler; caller must pass a real binary.
  */
 import {spawnSync} from "node:child_process";
-import {constants as fsConstants} from "node:fs";
 import {createHash} from "node:crypto";
+import {constants as fsConstants} from "node:fs";
 import {writeFile,mkdir,mkdtemp,rm,rename,realpath,stat,open} from "node:fs/promises";
 import {dirname,resolve,isAbsolute,join,basename} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -24,7 +24,8 @@ async function readBounded(path,limit,label){
   label==="compiler"?"compiler exceeds 256 MiB executable budget":
   label==="linked Wasm"?"linked Wasm exceeds 16 MiB artifact budget":
   label+" exceeds configured byte budget";
- const fd=await open(path,fsConstants.O_RDONLY|fsConstants.O_NONBLOCK|fsConstants.O_NOFOLLOW);
+ const nofollow=fsConstants.O_NOFOLLOW||0;
+ const fd=await open(path,fsConstants.O_RDONLY|fsConstants.O_NONBLOCK|nofollow);
  try{
   const st=await fd.stat();
   if(!st.isFile())throw Error(label+" is not a regular file");
