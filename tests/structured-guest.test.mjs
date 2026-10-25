@@ -27,16 +27,19 @@ test("actual bounded-class Oreslang source compiles to verified Wasm32",{
   }
  }finally{await rm(dir,{recursive:true,force:true})}
 });
-test("invalid overlapping mutable/shared class loans cannot publish Wasm",{
+test("invalid class borrows and immutable owners cannot publish Wasm",{
  skip:!compiler
 },async()=>{
  const dir=await mkdtemp(join(tmpdir(),"oreslang-structured-denied-"));
  try{
-  const output=join(dir,"invalid.wasm");
-  await assert.rejects(compileOresToWasm({
-   compiler,source:join(examples,"structured-overlap-reject.ores"),
-   output,environment:"browser"
-  }),/command failed/);
-  await assert.rejects(readFile(output),/ENOENT/);
+  for(const invalid of ["structured-overlap-reject.ores",
+                        "structured-immutable-owner-reject.ores"]){
+   const output=join(dir,invalid+".wasm");
+   await assert.rejects(compileOresToWasm({
+    compiler,source:join(examples,invalid),
+    output,environment:"browser"
+   }),/command failed/);
+   await assert.rejects(readFile(output),/ENOENT/);
+  }
  }finally{await rm(dir,{recursive:true,force:true})}
 });
