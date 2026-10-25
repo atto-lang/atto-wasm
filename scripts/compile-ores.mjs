@@ -16,6 +16,9 @@ import {publishAtomicRelease} from "./atomic-release.mjs";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
 const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES=16*1024*1024;
+// A preflight stat(path) is not an admission guard against an attacker
+// replacing that pathname with a FIFO or growing file before readFile(path).
+// Use one nonblocking, nofollow descriptor for both fstat and bounded reads.
 async function readBounded(path,limit,label){
  const limitError=label==="source"?"source exceeds 1 MiB compiler bridge budget":
   label==="compiler"?"compiler exceeds 256 MiB executable budget":
@@ -245,14 +248,16 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
 const calledFromCli=process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url);
 if(calledFromCli){
  try{
-  const usedOptions=new Set();
-  const options=Object.fromEntries(process.argv.slice(2).map(x=>{
+  // Duplicate policy/configuration flags must fail closed: silently taking
+  // the last compiler SHA or output pathname makes the build invocation
+  // ambiguous and can bypass an intended caller-side pin.
+  const options={};
+  for(const x of process.argv.slice(2)){
    const m=/^--(compiler|source|output|export|clang|compiler-sha256|environment|publication)=(.*)$/.exec(x);
    if(!m)throw Error("unexpected CLI option: "+x);
-   if(usedOptions.has(m[1]))throw Error("duplicate CLI option: "+m[1]);
-   usedOptions.add(m[1]);
-   return[m[1],m[2]];
-  }));
+   if(Object.hasOwn(options,m[1]))throw Error("duplicate CLI option: "+m[1]);
+   options[m[1]]=m[2];
+  }
   const record=await compileOresToWasm({
    compiler:options.compiler,source:options.source,
    output:options.output||resolve(projectRoot,"build/guest.wasm"),
