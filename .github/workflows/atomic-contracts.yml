@@ -1,0 +1,29 @@
+name: Atomic release JSON Schema and TypeSpec conformance
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  atomic-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.1'
+      - name: Install wasm32 compiler and schema verifier
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang lld
+          python3 -m pip install --break-system-packages 'jsonschema==4.25.1'
+      - name: Compile real Wasm from fixture LLVM and seal an atomic release
+        run: node scripts/generate-atomic-contract-fixtures.mjs "$RUNNER_TEMP/atomic-contract-fixtures"
+      - name: Validate actual pointer, seal, manifest and provenance with JSON Schema
+        run: python3 scripts/verify-atomic-contracts.py "$RUNNER_TEMP/atomic-contract-fixtures"
+      - name: Validate the TypeSpec source interface
+        run: |
+          npm install --no-save --package-lock=false '@typespec/compiler@1.4.0'
+          npx tsp compile contracts/atomic-release.tsp --no-emit

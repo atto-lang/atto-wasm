@@ -43,7 +43,9 @@ Descriptors: `string`, `i64`, `bool`, `bytes`, `{tuple:["string","i64"]}`, `{arr
 
 - Maximum message size: 1 MiB including header; callers may tighten it.
 - Nesting depth at most 12; maximum list/array bound 4096; at most 256 contract variants and 64 fields per variant.
+- Total normalized schema complexity is limited to 4096 type descriptor nodes and 64 KiB of canonical UTF-8 JSON. This is separate from the 4096 visited-value node limit that rejects zero-byte nested-container CPU amplification.
 - Mandatory ownership policy is copy. Encoder snapshots typed bytes, and decoder snapshots its entire input before asynchronous WebCrypto hashing.
+- Every array/list element must be an own, present slot; sparse JavaScript arrays are rejected, including for zero-byte tuple elements, so encode/decode length and value-node budget accounting remain consistent.
 - SharedArrayBuffer views and implicit type coercions are rejected. No shared linear memory, borrowed pointers, implicit host imports, or zero-copy transfer in v1.
 - Unknown variants, alternative IDs, malformed/trailing payloads, incompatible schemas, unsupported flags and versions, invalid UTF-8, noncanonical boolean and over-budget messages fail closed.
 - Hashing guarantees matching schema identity, not publisher authenticity or authorization. Consumers must separately enforce host capability grants.
@@ -55,3 +57,4 @@ Descriptors: `string`, `i64`, `bool`, `bytes`, `{tuple:["string","i64"]}`, `{arr
 3. Browser Worker supervisor with cancellation, single-flight turn admission and bounded queues.
 4. Identical executable fixtures through LLVM, Wasm, browser and GraalVM where supported.
 5. SHA-exact source, compiler, artifact and schema evidence in funded CI. JS reference tests alone cannot prove actor parity.
+
