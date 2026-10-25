@@ -155,6 +155,33 @@ def validate_cold_boot_receipt(serial_output,checkpoint,returncode):
  return markers[0]
 
 
+def publish_boundary_observed(serial_bytes,mode,checkpoint):
+ """Require one complete standalone guest boundary line before SIGKILL.
+
+ Kernel echoes, partial serial writes, wrong checkpoint strings and forged
+ prefix/suffix text cannot trigger a false "successful" durability test.
+ Multiwriter boundaries must additionally carry a canonical release digest.
+ """
+ if mode=="publish":
+  if checkpoint not in CHECKPOINTS:
+   return False
+ elif mode=="multi-publish":
+  if checkpoint not in MULTIWRITER_CASES:
+   return False
+ else:
+  return False
+ expected=b"GUEST_POWER_CUT_BOUNDARY "+checkpoint.encode("ascii")
+ # Require a trailing newline; never admit incomplete buffered UART output.
+ for line in serial_bytes.split(b"\n")[:-1]:
+  line=line.removesuffix(b"\r")
+  if mode=="publish" and line==expected:
+   return True
+  if mode=="multi-publish" and re.fullmatch(
+     re.escape(expected)+rb" final=[0-9a-f]{64}",line):
+   return True
+ return False
+
+
 def boot_until(kernel,initrd,disk,mode,checkpoint):
  wanted=("GUEST_POWER_CUT_BOUNDARY " if mode.endswith("publish") else
          "GUEST_COLD_BOOT_RECOVERY_OK ")+checkpoint
@@ -176,7 +203,8 @@ def boot_until(kernel,initrd,disk,mode,checkpoint):
     if not data:
      break
     output=(output+data)[-MAX_LOG:]
-    if wanted.encode() in output:
+    if (publish_boundary_observed(output,mode,checkpoint) if mode.endswith("publish")
+        else wanted.encode() in output):
      success=True
      if mode.endswith("publish"):
       # QEMU process dies abruptly. Do NOT issue ACPI poweroff, sync, a

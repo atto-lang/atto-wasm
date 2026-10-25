@@ -27,35 +27,49 @@ jobs:
           set -euo pipefail
           read -r -a packages <<< "$(python3 scripts/verify-native-toolchain-lock.py install-args clang lld)"
           sudo apt-get update
-          # Pin the actual signed guest kernel artifact, not a virtual metapackage
-          # whose apt index can lag the exact kernel package. Never float to
-          # an arbitrary newer kernel: reproducible QEMU evidence requires an
-          # explicitly reviewed ABI/version pair.
-          kernel_package='linux-image-6.8.0-146-generic'
-          kernel_version='6.8.0-146.146'
-          if ! apt-cache madison "$kernel_package" | awk '{print $3}' | grep -Fxq "$kernel_version"; then
-            echo "::error::Pinned guest kernel package unavailable in this runner's apt index"
-            apt-cache policy "$kernel_package" linux-image-virtual
+          # Preserve the reviewed GA-kernel allowlist while selecting actual
+          # signed image artifacts. Never float to latest, HWE or the host kernel.
+          kernel_package=''
+          kernel_package_version=''
+          for candidate in 6.8.0-147.147 6.8.0-146.146 6.8.0-139.139; do
+            package="linux-image-${candidate%.*}-generic"
+            available="$(apt-cache madison "$package" | awk -F '|' '{gsub(/^ +| +$/, "", $2); print $2}')"
+            if printf '%s\n' "$available" | grep -Fxq "$candidate"; then
+              kernel_package="$package"
+              kernel_package_version="$candidate"
+              break
+            fi
+          done
+          if [ -z "$kernel_package" ]; then
+            echo "::error::No reviewed signed QEMU guest kernel available in apt" >&2
+            apt-cache policy linux-image-6.8.0-147-generic linux-image-6.8.0-146-generic linux-image-6.8.0-139-generic
             exit 1
           fi
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             "${packages[@]}" qemu-system-x86 busybox-static e2fsprogs initramfs-tools \
-            "$kernel_package=$kernel_version"
-          test "$(dpkg-query -W -f='${Version}' "$kernel_package")" = "$kernel_version"
+            "$kernel_package=$kernel_package_version"
           python3 scripts/verify-native-toolchain-lock.py verify clang lld
-          test -s /boot/vmlinuz-6.8.0-146-generic
-          test -s /boot/initrd.img-6.8.0-146-generic
+          test "$(dpkg-query -W -f='${Version}' "$kernel_package")" = "$kernel_package_version"
+          # A signed linux-image-6.8.0-N-generic package supplies the same ABI name.
+          guest_kernel="${kernel_package_version%.*}-generic"
+          test -s "/boot/vmlinuz-$guest_kernel"
+          test -s "/boot/initrd.img-$guest_kernel"
+          echo "QEMU_KERNEL_APT_PACKAGE=$kernel_package=$kernel_package_version"
+          echo "QEMU_KERNEL_VERSION=$guest_kernel"
+          # The initramfs is runner-built and not an immutable Ubuntu package.
+          # Persist its exact name and hash for this checkout/run's evidence.
+          echo "QEMU_INITRD_PATH=/boot/initrd.img-$guest_kernel" >> "$GITHUB_ENV"
           # Ubuntu kernel files are root-readonly (0600).
-          sudo cp /boot/vmlinuz-6.8.0-146-generic "$RUNNER_TEMP/ores-qemu-vmlinuz"
+          sudo cp "/boot/vmlinuz-$guest_kernel" "$RUNNER_TEMP/ores-qemu-vmlinuz"
           sudo chmod 0644 "$RUNNER_TEMP/ores-qemu-vmlinuz"
           echo "QEMU_KERNEL_SHA256=$(sha256sum "$RUNNER_TEMP/ores-qemu-vmlinuz" | cut -d' ' -f1)"
-          echo "QEMU_INITRD_SHA256=$(sha256sum /boot/initrd.img-6.8.0-146-generic | cut -d' ' -f1)"
+          echo "QEMU_INITRD_SHA256=$(sha256sum "/boot/initrd.img-$guest_kernel" | cut -d' ' -f1)"
       - name: Verify five single-publisher and two multi-publisher abrupt VM cold boots
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/qemu-powercut-harness.py \
-            "$RUNNER_TEMP/ores-qemu-vmlinuz" /boot/initrd.img-6.8.0-146-generic
+            "$RUNNER_TEMP/ores-qemu-vmlinuz" "$QEMU_INITRD_PATH"
           python3 -m json.tool build/qemu-powercut-evidence.json > /dev/null
           python3 - <<'PY'
           import json,pathlib,subprocess
@@ -78,3 +92,4 @@ jobs:
           path: build/qemu-powercut-evidence.json
           if-no-files-found: warn
           retention-days: 30
+

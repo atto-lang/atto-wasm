@@ -43,8 +43,13 @@ unlike host environments.
 ## QEMU ext4 unclean VM termination and cold-boot testing
 
 `.github/workflows/qemu-powercut.yml` runs on Ubuntu 24.04 with
-a fixed guest kernel package version, logs the actual guest kernel,
-initramfs, and QEMU executable SHA-256s, and installs the pinned
+an exact-version allowlist for the Ubuntu 24.04 GA guest kernel (`linux-image-virtual`
+versions `6.8.0-147.147`, `6.8.0-146.146` or `6.8.0-139.139`, in preference order).
+It fails closed when neither reviewed version is available; it never silently
+upgrades to an unreviewed kernel or substitutes the runner host kernel.
+The workflow verifies the installed `dpkg` package version and logs the guest
+kernel version plus the actual kernel, initramfs, and QEMU executable SHA-256s.
+It also installs the pinned
 Clang/LLD fixture toolchain. It creates **five disposable ext4 raw
 disk images**, each initialized with one genuine verified core Wasm
 release. No persistent application data or external block devices
@@ -111,9 +116,13 @@ and cold-boot counts. The CI artifact is retained for 30 days.
   scheduler or filesystem interleaving, multi-writer linearization
   across actual machines, hostile writable filesystem principals,
   cross-filesystem rename, or automatic reader-aware garbage collection.
-- The QEMU guest kernel package version is fixed for this CI, but
-  the generated initramfs can vary with host image contents; the exact
-  resulting bytes are therefore hashed into each run's receipt.
+- The QEMU guest kernel is exact-version allowlisted, rather than fixed to a
+  single apt version that may disappear from mutable Ubuntu mirrors. The
+  successful version is selected only from the three reviewed GA-kernel builds,
+  checked after installation, and logged; any other available version rejects
+  admission. This is **not** immutable package-byte pinning. The generated
+  initramfs can vary with host image contents, so both kernel and initramfs
+  bytes are hashed into each observed evidence receipt.
 - Native source and action identities are pinned, but fully immutable
   transitive apt and Linux runtime bytes require an immutable package
   snapshot (or published digest-pinned builder) and independent review.
