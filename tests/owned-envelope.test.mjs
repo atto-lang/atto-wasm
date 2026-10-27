@@ -264,3 +264,31 @@ test("hidden or symbol-bearing schema keys cannot bypass closed ABI shape",async
  await assert.rejects(encodeMessage(contract,fieldMessage),/invalid message fields shape/);
  assert.deepEqual(await decodeMessage(contract,valid),msg);
 });
+
+test("guest message descriptors must be own data, never executable getters",async()=>{
+ let calls=0;
+ const getter=()=>{calls++;return 42n;};
+ const fields={text:"safe"};
+ Object.defineProperty(fields,"n",{enumerable:true,get:getter});
+ await assert.rejects(encodeMessage(contract,{variant:"Compute",fields}),
+  /invalid message fields shape/);
+ assert.equal(calls,0,"field accessor must not execute");
+
+ const top={fields:{text:"safe",n:42n}};
+ Object.defineProperty(top,"variant",{enumerable:true,get(){
+  calls++;return "Compute";
+ }});
+ await assert.rejects(encodeMessage(contract,top),/invalid message shape/);
+ assert.equal(calls,0,"top-level variant getter must not execute");
+
+ const items=["a"];
+ Object.defineProperty(items,"0",{enumerable:true,get(){
+  calls++;return "a";
+ }});
+ const batch={variant:"Batch",fields:{
+  pair:["hi",1n],fixed:[true,false],items,
+  state:{variant:"None",value:null},blob:Uint8Array.of(1)
+ }};
+ await assert.rejects(encodeMessage(contract,batch),/sparse array\/list element/);
+ assert.equal(calls,0,"list item getter must not execute");
+});
