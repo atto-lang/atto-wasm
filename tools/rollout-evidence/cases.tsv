@@ -1,0 +1,3 @@
+runtime-abi	host	host
+import-capability	host	host
+bridge-provenance	host	host
