@@ -30,7 +30,8 @@ function requiredShape(x,keys,name){
 function dense(items,name){
  if(!Array.isArray(items))fail("invalid "+name);
  for(let i=0;i<items.length;i++)
-  if(!Object.hasOwn(items,i))fail("sparse "+name);
+  if(!Object.hasOwn(Object.getOwnPropertyDescriptor(items,String(i))??{},"value"))
+   fail("sparse "+name);
 }
 function unique(a,label){if(new Set(a).size!==a.length)fail("duplicate "+label);}
 function name(x){if(typeof x!=="string"||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(x))fail("invalid name");return x;}
@@ -144,8 +145,9 @@ function encode(w,t,x,d=0){
   // would silently encode fewer values than the declared length, defeating
   // node budgets and canonical typed-message round trips.
   for(let i=0;i<x.length;i++){
-   if(!Object.hasOwn(x,i))fail("sparse array/list element");
-   encode(w,spec.element,x[i],d+1);
+   const descriptor=Object.getOwnPropertyDescriptor(x,String(i));
+   if(!descriptor||!Object.hasOwn(descriptor,"value"))fail("sparse array/list element");
+   encode(w,spec.element,descriptor.value,d+1);
   }
   return;
  }
@@ -184,10 +186,9 @@ function budget(n){if(!Number.isSafeInteger(n)||n<HEADER||n>LIMIT)fail("invalid 
 export async function encodeMessage(schema,message,{maxBytes=LIMIT}={}){
  budget(maxBytes);
  const c=contract(schema);
- shape(message,["variant","fields"],"message");
+ requiredShape(message,["variant","fields"],"message");
  const v=c.variants.find(x=>x.name===message.variant);if(!v)fail("unknown message variant");
- shape(message.fields,v.fields.map(x=>x.name),"message fields");
- if(Object.keys(message.fields).length!==v.fields.length)fail("missing message field");
+ requiredShape(message.fields,v.fields.map(x=>x.name),"message fields");
  const w=new Writer(maxBytes-HEADER);for(const f of v.fields)encode(w,f.type,message.fields[f.name]);
  // Payload bytes and normalized schema are snapshotted before any await.
  const payload=w.finish(),hash=await digest(c);
