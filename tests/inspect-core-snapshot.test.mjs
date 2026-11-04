@@ -100,3 +100,14 @@ test("Wasm inspector snapshots offset slices without aliasing caller bytes",()=>
  supplied[4]=255;
  assert.deepEqual(Array.from(verified.bytes),[0,97,115,109,1,0,0,0]);
 });
+
+test("raw ArrayBuffer core bytes are detached from later caller mutations",()=>{
+ const original=core();
+ const source=original.buffer;
+ const result=inspectWasmBytes(source,{maxModuleBytes:8});
+ assert.notEqual(result.bytes.buffer,source);
+ assert.deepEqual(Array.from(result.bytes),[0,97,115,109,1,0,0,0]);
+ original.fill(255);
+ assert.deepEqual(Array.from(result.bytes),[0,97,115,109,1,0,0,0],
+   "validated snapshot must not share mutable caller backing");
+});
