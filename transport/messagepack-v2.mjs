@@ -173,11 +173,39 @@ async function digest(shape){
  if(!subtle)fail("SHA-256 WebCrypto unavailable");
  return new Uint8Array(await subtle.digest("SHA-256",text.encode("oreslang.actor.shape.v2/"+shape)));
 }
+// Intrinsic byte slots deny spoofed .buffer/.byteLength accessors and
+// cross-realm SharedArrayBuffer backing before allocating any frame copy.
+const bufferLength=Object.getOwnPropertyDescriptor(ArrayBuffer.prototype,"byteLength").get;
+const sharedLength=typeof SharedArrayBuffer==="function" ?
+ Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype,"byteLength").get:null;
+const typedProto=Object.getPrototypeOf(Uint8Array.prototype);
+const typedSlot=k=>Object.getOwnPropertyDescriptor(typedProto,k).get;
+const dataSlot=k=>Object.getOwnPropertyDescriptor(DataView.prototype,k).get;
+const copyBytes=Function.prototype.call.bind(Uint8Array.prototype.set);
 function snapshot(input){
- if(input instanceof ArrayBuffer)return Uint8Array.from(new Uint8Array(input));
- if(!ArrayBuffer.isView(input))fail("expected binary message");
- if(typeof SharedArrayBuffer!=="undefined"&&input.buffer instanceof SharedArrayBuffer)fail("shared input rejected");
- return Uint8Array.from(new Uint8Array(input.buffer,input.byteOffset,input.byteLength));
+ let backing,offset=0,length;
+ try{
+  length=bufferLength.call(input);
+  backing=input;
+ }catch{
+  if(!ArrayBuffer.isView(input))fail("expected binary message");
+  try{
+   backing=dataSlot("buffer").call(input);
+   offset=dataSlot("byteOffset").call(input);
+   length=dataSlot("byteLength").call(input);
+  }catch{
+   backing=typedSlot("buffer").call(input);
+   offset=typedSlot("byteOffset").call(input);
+   length=typedSlot("byteLength").call(input);
+  }
+ }
+ if(sharedLength){try{sharedLength.call(backing);fail("shared input rejected");}
+   catch(error){if(error?.message?.includes("shared input rejected"))throw error;}}
+ if(length>MAX)fail("message byte budget exceeded");
+ const source=new Uint8Array(backing,offset,length);
+ const owned=new Uint8Array(length);
+ copyBytes(owned,source);
+ return owned;
 }
 function equal(a,b){return a.length===b.length&&a.every((x,i)=>x===b[i]);}
 function makeWire(schema,hash,payload){
