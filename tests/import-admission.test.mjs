@@ -63,3 +63,15 @@ test("block comment nesting is bounded before native scalar import scanning",()=
   assert.throws(()=>check(bytes("/*".repeat(129)+"*/".repeat(129))),/block comment nesting exceeded/);
   assert.throws(()=>check(bytes("/*".repeat(129)+"import fnc x from \"+/private\";"+ "*/".repeat(129))),/block comment nesting exceeded/);
 });
+
+test("shared mutable source cannot pass scalar import preflight",()=>{
+  if(typeof SharedArrayBuffer !== "function")return;
+  const source=new Uint8Array(new SharedArrayBuffer(128));
+  assert.throws(()=>check(source),/cannot use shared memory/);
+  // A forged .buffer property must not hide actual SharedArrayBuffer backing.
+  Object.defineProperty(source,"buffer",{value:new ArrayBuffer(128)});
+  assert.throws(()=>check(source),/cannot use shared memory/);
+  assert.doesNotThrow(()=>check(bytes("fnc main():int{return 42;}")));
+  assert.throws(()=>check(bytes('import fnc x from "+/private";')),
+    /verified native import graph/);
+});
