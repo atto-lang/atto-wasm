@@ -158,7 +158,10 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  const scratch=await mkdtemp(join(outputParent,".oreslang-wasm-"));
  const provisional=join(scratch,"guest.wasm");
  try{
- const stagedSource=join(scratch,"source.ores");
+ // Keep the canonical .atto suffix when passing the pinned source snapshot
+ // to the native compiler. Legacy callers retain the historical .ores path.
+ // Extension handling does not relax import or compiler-binary admission.
+ const stagedSource=join(scratch,sourcePath.endsWith(".atto")?"source.atto":"source.ores");
  const stagedCompiler=join(scratch,"compiler-exact");
  await writeFile(stagedSource,sourceBytes,{mode:0o400,flag:"wx"});
  // Execute the exact compiler bytes whose SHA-256 we pinned, not a mutable
