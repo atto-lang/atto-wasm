@@ -7,7 +7,7 @@ import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
 import {constants as fsConstants} from "node:fs";
 import {writeFile,mkdir,mkdtemp,rm,rename,realpath,stat,open} from "node:fs/promises";
-import {dirname,resolve,isAbsolute,join,basename} from "node:path";
+import {dirname,resolve,isAbsolute,join,basename,extname} from "node:path";
 import {fileURLToPath} from "node:url";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
 import {assertImportFreeSource} from "./import-admission.mjs";
@@ -112,6 +112,11 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  const [sourcePath,compilerPath,outputParent]=await Promise.all([
   realpath(source),realpath(compiler),realpath(dirname(output))
  ]);
+ // A source with a nonlanguage extension must not be silently relabeled
+ // .ores, and .ATTO/.ORES must retain their recognized language identity.
+ const sourceSuffix=extname(sourcePath).toLowerCase();
+ if(sourceSuffix!==".atto"&&sourceSuffix!==".ores")
+  throw Error("source must have canonical .atto or legacy .ores extension");
  const published=join(outputParent,basename(output));
  const protectedInputs=new Set([sourcePath,compilerPath]);
  if(!["atomic","legacy"].includes(publication))throw Error("invalid artifact publication mode");
@@ -161,7 +166,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  // Keep the canonical .atto suffix when passing the pinned source snapshot
  // to the native compiler. Legacy callers retain the historical .ores path.
  // Extension handling does not relax import or compiler-binary admission.
- const stagedSource=join(scratch,sourcePath.endsWith(".atto")?"source.atto":"source.ores");
+ const stagedSource=join(scratch,sourceSuffix===".atto"?"source.atto":"source.ores");
  const stagedCompiler=join(scratch,"compiler-exact");
  await writeFile(stagedSource,sourceBytes,{mode:0o400,flag:"wx"});
  // Execute the exact compiler bytes whose SHA-256 we pinned, not a mutable
