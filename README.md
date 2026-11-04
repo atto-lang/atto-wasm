@@ -47,6 +47,12 @@ node scripts/compile-ores.mjs \
 ORESLANG_LLVM_COMPILER=/absolute/path/to/oreslang-llvmc npm test
 ~~~
 
+Canonical AttoLang `.atto` inputs retain that suffix in the staged, hashed
+compiler input; legacy `.ores` inputs retain their prior behavior. The bridge
+still validates source bytes and compiler identity independently. Its dedicated
+suffix regression runs a **stub compiler** through real Clang/Wasm linking and
+is not proof of a modern `.atto` guest compiler or backend parity.
+
 The script runs the native compiler on the exact source, feeds its LLVM IR into Clang's wasm32 target, requires a requested i64 export, validates the resulting module, rejects **all** host imports for this initial pure-integer slice, and records source / compiler executable / IR / Wasm SHA-256 values in a provenance sidecar. Generated modules are staged in a scratch directory until verification succeeds.
 
 `tests/bridge.test.mjs` has a clearly labeled stub-compiler test validating the linker plumbing. It must **never** be counted as Oreslang compiler parity. The separate optional native-compiler integration test runs only with `ORESLANG_LLVM_COMPILER`; the standard CI suite reports it skipped. This does not provide actor/channel/async or ownership feature parity, environment admission, component/WASI APIs, or full source-to-Wasm lowering. The user-supplied compiler path must be trusted; source repository revision is not cryptographically derived from binary hashes.
