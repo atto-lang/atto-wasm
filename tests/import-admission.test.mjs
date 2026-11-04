@@ -57,3 +57,9 @@ for (const boundary of ["\u0085", "\u2028", "\u2029"]) {
     assert.doesNotThrow(() => check(bytes('// import ignored ' + boundary + 'fnc main():int{return 42;}')));
   });
 }
+
+test("block comment nesting is bounded before native scalar import scanning",()=>{
+  assert.doesNotThrow(()=>check(bytes("/*".repeat(128)+"*/".repeat(128)+"fnc main():int{return 42;}")));
+  assert.throws(()=>check(bytes("/*".repeat(129)+"*/".repeat(129))),/block comment nesting exceeded/);
+  assert.throws(()=>check(bytes("/*".repeat(129)+"import fnc x from \"+/private\";"+ "*/".repeat(129))),/block comment nesting exceeded/);
+});

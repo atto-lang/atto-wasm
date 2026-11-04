@@ -27,7 +27,7 @@ export function assertImportFreeSource(bytes) {
       let depth = 1;
       i += 2;
       while (i < source.length && depth) {
-        if (source.startsWith("/*", i)) { depth++; i += 2; }
+        if (source.startsWith("/*", i)) { if (++depth > 128) throw Error("Oreslang block comment nesting exceeded"); i += 2; }
         else if (source.startsWith("*/", i)) { depth--; i += 2; }
         else i++;
       }
