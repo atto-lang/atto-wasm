@@ -7,9 +7,25 @@
  * Scan source tokens, not substrings: skip quoted text, line comments and
  * nested block comments. Malformed UTF-8/comments/strings also fail closed.
  */
+// Inspect typed array internal slots: .buffer may be shadowed by an accessor.
+const typedBuffer = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype),"buffer").get;
+const typedByteLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype),"byteLength").get;
+const sharedByteLength = typeof SharedArrayBuffer === "function"
+  ? Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype,"byteLength").get : null;
+
 export function assertImportFreeSource(bytes) {
-  if (!(bytes instanceof Uint8Array) || bytes.length > 1024 * 1024)
+  if (!(bytes instanceof Uint8Array))
     throw Error("Oreslang scalar source must be bytes within the 1 MiB admission budget");
+  let backing, size;
+  try { backing = typedBuffer.call(bytes); size = typedByteLength.call(bytes); }
+  catch { throw Error("Oreslang scalar source requires genuine Uint8Array bytes"); }
+  if (size > 1024 * 1024)
+    throw Error("Oreslang scalar source must be bytes within the 1 MiB admission budget");
+  if (sharedByteLength) {
+    let shared = false;
+    try { sharedByteLength.call(backing); shared = true; } catch {}
+    if (shared) throw Error("Oreslang scalar source cannot use shared memory");
+  }
   const source = new TextDecoder("utf-8", {fatal: true}).decode(bytes);
   if (source.includes("\0")) throw Error("Oreslang source contains NUL byte");
   let i = 0;
