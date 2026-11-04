@@ -38,3 +38,29 @@ test("spoofed typed-array buffer cannot bypass the byte budget",()=>{
  Object.defineProperty(view,"buffer",{value:new ArrayBuffer(8)});
  assert.throws(()=>inspectWasmBytes(view,{maxModuleBytes:64}),/maximum byte size/);
 });
+
+test("Wasm inspector rejects start and table sections before compilation",()=>{
+ const header=[0,97,115,109,1,0,0,0];
+ for(const [section,pattern] of [
+  [[8,1,0],/start section/],
+  [[4,1,0],/table section/]
+ ])assert.throws(()=>inspectWasmBytes(Uint8Array.from([...header,...section]),
+  {maxModuleBytes:64,maxMemoryPages:2}),pattern);
+});
+
+test("Wasm inspector requires bounded fixed memory pages",()=>{
+ const header=[0,97,115,109,1,0,0,0];
+ for(const [section,pattern] of [
+  [[5,3,1,0,1],/fixed initial and maximum limits/],
+  [[5,4,1,3,1,1],/shared\/memory64 forbidden/],
+  [[5,4,1,1,3,2],/linear memory exceeds host budget/],
+  [[5,4,1,1,1,3],/linear memory exceeds host budget/]
+ ])assert.throws(()=>inspectWasmBytes(Uint8Array.from([...header,...section]),
+  {maxModuleBytes:64,maxMemoryPages:2}),pattern);
+ const admitted=inspectWasmBytes(Uint8Array.from([...header,5,4,1,1,1,2]),
+  {maxModuleBytes:64,maxMemoryPages:2});
+ assert.equal(admitted.memoryCount,1);
+ assert.equal(admitted.hasMemoryMaximum,true);
+ assert.equal(admitted.memoryInitial,1);
+ assert.equal(admitted.memoryMaximum,2);
+});
