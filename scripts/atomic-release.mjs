@@ -3,7 +3,8 @@
  * trust boundary. Immutable means nonoverwriting via this API, not WORM media.
  */
 import {createHash} from "node:crypto";
-import {readFile,rename,rm,mkdir,mkdtemp,lstat,chmod,open,readdir} from "node:fs/promises";
+import {rename,rm,mkdir,mkdtemp,lstat,chmod,open,readdir} from "node:fs/promises";
+import {constants as fsConstants} from "node:fs";
 import {join,dirname,resolve} from "node:path";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
 import {inspectWasmBytes} from "./inspect-core-memory.mjs";
@@ -38,11 +39,32 @@ async function durableWrite(path,bytes){
 }
 
 async function safeFile(path,limit){
- const stat=await lstat(path);
- if(!stat.isFile()||stat.isSymbolicLink()||stat.size>limit)fail("invalid file");
- const bytes=await readFile(path);
- if(bytes.length>limit)fail("oversized file");
- return bytes;
+ // Never lstat one pathname and later read an attacker-replaced FIFO/file.
+ // The opened descriptor must match the checked regular-file inode, with a
+ // nonblocking/no-follow open and a hard byte ceiling enforced while reading.
+ const before=await lstat(path);
+ if(!before.isFile()||before.isSymbolicLink()||before.size>limit)
+  fail("invalid file");
+ let handle;
+ try {handle=await open(path,fsConstants.O_RDONLY|
+   (fsConstants.O_NOFOLLOW||0)|(fsConstants.O_NONBLOCK||0));}
+ catch {fail("invalid file");}
+ try {
+  const current=await handle.stat();
+  if(!current.isFile()||current.size>limit||
+     current.dev!==before.dev||current.ino!==before.ino)
+   fail("release file changed or is not a bounded regular file");
+  const blocks=[];let total=0;
+  while(total<=limit){
+   const chunk=Buffer.allocUnsafe(Math.min(65536,limit-total+1));
+   const {bytesRead}=await handle.read(chunk,0,chunk.length,null);
+   if(bytesRead===0)break;
+   total+=bytesRead;
+   if(total>limit)fail("oversized file");
+   blocks.push(chunk.subarray(0,bytesRead));
+  }
+  return Buffer.concat(blocks,total);
+ }finally{await handle.close()}
 }
 async function safeJSON(path){
  let value;
