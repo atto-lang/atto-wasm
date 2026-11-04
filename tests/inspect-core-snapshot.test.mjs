@@ -22,3 +22,19 @@ test("Wasm inspector rejects hidden shared backing and spoofed byte lengths",()=
   assert.throws(()=>inspectWasmBytes(shared,{maxModuleBytes:64}),/shared Wasm input is not admitted/);
  }
 });
+
+test("DataView backing, offsets and length come from native slots",()=>{
+ const input=Uint8Array.from([255,0,97,115,109,1,0,0,0,255]);
+ const view=new DataView(input.buffer,1,8);
+ Object.defineProperty(view,"byteOffset",{value:0});
+ Object.defineProperty(view,"byteLength",{value:10});
+ Object.defineProperty(view,"buffer",{get(){throw Error("caller buffer getter invoked");}});
+ const result=inspectWasmBytes(view,{maxModuleBytes:8});
+ assert.deepEqual(Array.from(result.bytes),[0,97,115,109,1,0,0,0]);
+});
+
+test("spoofed typed-array buffer cannot bypass the byte budget",()=>{
+ const view=new Uint8Array(65);
+ Object.defineProperty(view,"buffer",{value:new ArrayBuffer(8)});
+ assert.throws(()=>inspectWasmBytes(view,{maxModuleBytes:64}),/maximum byte size/);
+});
