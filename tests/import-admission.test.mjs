@@ -49,3 +49,11 @@ test("reject NUL and oversized sources before compiler invocation", () => {
   assert.throws(() => check(new Uint8Array(1024*1024+1)), /1 MiB/);
   assert.throws(() => check("import"), /must be bytes/);
 });
+
+for (const boundary of ["\u0085", "\u2028", "\u2029"]) {
+  test("Unicode line-separator import cannot hide in line comment U+" + boundary.charCodeAt(0).toString(16), () => {
+    assert.throws(() => check(bytes('// hidden ' + boundary + 'import fnc x from "+/secret";')),
+      /verified native import graph/);
+    assert.doesNotThrow(() => check(bytes('// import ignored ' + boundary + 'fnc main():int{return 42;}')));
+  });
+}
