@@ -85,3 +85,18 @@ test("real core Wasm memory limits and start sections fail closed before publica
  assert.throws(()=>inspectWasmBytes(start,{maxModuleBytes:64,maxMemoryPages:2}),
    /start section is forbidden/);
 });
+
+test("Wasm inspector snapshots offset slices without aliasing caller bytes",()=>{
+ const supplied=Uint8Array.from([255,0,97,115,109,1,0,0,0,255]);
+ const slice=supplied.subarray(1,9);
+ let calls=0;
+ Object.defineProperty(slice,"byteOffset",{value:0});
+ Object.defineProperty(slice,"set",{value(){calls++;throw Error("untrusted set called");}});
+ const verified=inspectWasmBytes(slice,{maxModuleBytes:8});
+ assert.deepEqual(Array.from(verified.bytes),[0,97,115,109,1,0,0,0]);
+ assert.equal(calls,0);
+ assert.notEqual(verified.bytes.buffer,supplied.buffer);
+ supplied[1]=255;
+ supplied[4]=255;
+ assert.deepEqual(Array.from(verified.bytes),[0,97,115,109,1,0,0,0]);
+});
