@@ -122,11 +122,11 @@ test("unknown source extensions are rejected before stub compiler invocation",as
  const dir=await mkdtemp(join(tmpdir(),"oreslang-suffix-reject-"));
  try{
   const marker=join(dir,"compiler-invoked"),compiler=join(dir,"fake.sh"),output=join(dir,"bad.wasm");
-  await writeFile(compiler,'#!/bin/sh\\ntouch "'+marker+'"\\nexit 0\\n',{mode:0o700});
+  await writeFile(compiler,["#!/bin/sh",'touch "'+marker+'"',"exit 0",""].join("\n"),{mode:0o700});
   for(const name of ["guest.txt","guest.atto.bak","guest","guest.py"]){
    const source=join(dir,name);
    await writeFile(source,"pub fnc main(): int { return 42; }\n");
-   await assert.rejects(()=>compileOresToWasm({compiler,source,output}),/canonical \\.atto or legacy \\.ores/);
+   await assert.rejects(()=>compileOresToWasm({compiler,source,output}),/canonical .*atto.*ores/);
   }
   await assert.rejects(()=>readFile(marker),/ENOENT/);
   await assert.rejects(()=>readFile(output),/ENOENT/);
