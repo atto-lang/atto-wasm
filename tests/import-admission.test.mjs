@@ -94,3 +94,15 @@ test("UTF-8 BOM and embedded U+FEFF cannot conceal native imports",()=>{
   assert.doesNotThrow(()=>check(bytes("\uFEFFfnc main():int{return 42;}")));
   assert.doesNotThrow(()=>check(bytes("/* safe */\uFEFFfnc main():int{return 42;}")));
 });
+
+test("internal typed-array slots defeat forged length and offset metadata",()=>{
+  const oversized=new Uint8Array(1024*1024+1);
+  Object.defineProperty(oversized,"length",{value:0});
+  Object.defineProperty(oversized,"buffer",{value:new ArrayBuffer(0)});
+  Object.defineProperty(oversized,"byteLength",{value:0});
+  assert.throws(()=>check(oversized),/1 MiB/);
+  const backing=bytes('xxxximport fnc x from "+/private";');
+  const view=new Uint8Array(backing.buffer,4);
+  Object.defineProperty(view,"length",{value:0});
+  assert.throws(()=>check(view),/verified native import graph/);
+});
