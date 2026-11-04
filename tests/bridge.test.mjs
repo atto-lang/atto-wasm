@@ -98,3 +98,37 @@ test("stub compiler cannot publish Wasm from import-bearing source",async()=>{
   await assert.rejects(()=>readFile(output),/ENOENT/);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
+
+test("canonical .ATTO source suffix is preserved instead of downgraded to .ores",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"oreslang-uppercase-atto-stage-"));
+ try{
+  const compiler=join(dir,"suffix-stub.sh"),source=join(dir,"hello.ATTO"),output=join(dir,"upper.wasm");
+  await writeFile(compiler,[
+   "#!/bin/sh",
+   'case "$1" in',
+   "  *.atto) printf 'define i64 @main() { ret i64 42 }\\n' ;;",
+   "  *) exit 81 ;;",
+   "esac",""
+  ].join("\n"),{mode:0o700});
+  await writeFile(source,"pub fnc main(): int { return 42; }\n");
+  const record=await compileOresToWasm({compiler,source,output});
+  assert.equal(record.importCount,0);
+  const module=new WebAssembly.Module(await readFile(output));
+  assert.equal(new WebAssembly.Instance(module).exports.main(),42n);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
+
+test("unknown source extensions are rejected before stub compiler invocation",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"oreslang-suffix-reject-"));
+ try{
+  const marker=join(dir,"compiler-invoked"),compiler=join(dir,"fake.sh"),output=join(dir,"bad.wasm");
+  await writeFile(compiler,'#!/bin/sh\\ntouch "'+marker+'"\\nexit 0\\n',{mode:0o700});
+  for(const name of ["guest.txt","guest.atto.bak","guest","guest.py"]){
+   const source=join(dir,name);
+   await writeFile(source,"pub fnc main(): int { return 42; }\n");
+   await assert.rejects(()=>compileOresToWasm({compiler,source,output}),/canonical \\.atto or legacy \\.ores/);
+  }
+  await assert.rejects(()=>readFile(marker),/ENOENT/);
+  await assert.rejects(()=>readFile(output),/ENOENT/);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
