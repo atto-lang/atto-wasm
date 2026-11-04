@@ -64,3 +64,24 @@ test("Wasm inspector requires bounded fixed memory pages",()=>{
  assert.equal(admitted.memoryInitial,1);
  assert.equal(admitted.memoryMaximum,2);
 });
+
+test("real core Wasm memory limits and start sections fail closed before publication",()=>{
+ const header=[0,97,115,109,1,0,0,0];
+ // One native valid core memory: initial=1, maximum=2 pages.
+ const fixed=Uint8Array.from([...header,5,4,1,1,1,2]);
+ assert.equal(WebAssembly.validate(fixed),true);
+ const admitted=inspectWasmBytes(fixed,{maxModuleBytes:64,maxMemoryPages:2});
+ assert.equal(admitted.memoryCount,1);
+ assert.equal(admitted.hasMemoryMaximum,true);
+ assert.equal(admitted.memoryInitial,1);
+ assert.equal(admitted.memoryMaximum,2);
+ assert.throws(()=>inspectWasmBytes(fixed,{maxModuleBytes:64,maxMemoryPages:1}),
+   /linear memory exceeds host budget/);
+ const unlimited=Uint8Array.from([...header,5,3,1,0,1]);
+ assert.equal(WebAssembly.validate(unlimited),true);
+ assert.throws(()=>inspectWasmBytes(unlimited,{maxModuleBytes:64,maxMemoryPages:2}),
+   /memory requires fixed initial and maximum limits/);
+ const start=Uint8Array.from([...header,8,1,0]);
+ assert.throws(()=>inspectWasmBytes(start,{maxModuleBytes:64,maxMemoryPages:2}),
+   /start section is forbidden/);
+});
