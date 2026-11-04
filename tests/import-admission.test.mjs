@@ -82,6 +82,19 @@ test("spoofed byteLength cannot bypass preflight byte budget",()=>{
   assert.throws(()=>check(source),/1 MiB/);
 });
 
+test("UTF-8 BOM and embedded U+FEFF cannot conceal native imports",()=>{
+  const sourceForms=[
+    "\uFEFFimport fnc x from \"+/private\";",
+    "/* safe */\uFEFFimport fnc x from \"pkg:private\";",
+    "// safe\r\uFEFFimport fnc x from \"+/private\";",
+    "\uFEFF// comment\nimport fnc x from \"+/private\";"
+  ];
+  for(const source of sourceForms)
+    assert.throws(()=>check(bytes(source)),/verified native import graph/,JSON.stringify(source));
+  assert.doesNotThrow(()=>check(bytes("\uFEFFfnc main():int{return 42;}")));
+  assert.doesNotThrow(()=>check(bytes("/* safe */\uFEFFfnc main():int{return 42;}")));
+});
+
 test("internal typed-array slots defeat forged length and offset metadata",()=>{
   const oversized=new Uint8Array(1024*1024+1);
   Object.defineProperty(oversized,"length",{value:0});
