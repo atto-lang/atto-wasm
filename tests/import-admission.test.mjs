@@ -75,3 +75,9 @@ test("shared mutable source cannot pass scalar import preflight",()=>{
   assert.throws(()=>check(bytes('import fnc x from "+/private";')),
     /verified native import graph/);
 });
+
+test("spoofed byteLength cannot bypass preflight byte budget",()=>{
+  const source=new Uint8Array(1024*1024+1);
+  Object.defineProperty(source,"byteLength",{get(){return 1;}});
+  assert.throws(()=>check(source),/1 MiB/);
+});
