@@ -17,10 +17,10 @@ export function assertImportFreeSource(bytes) {
   const identPart = c => /[A-Za-z0-9_]/.test(c);
   while (i < source.length) {
     if (source.startsWith("//", i)) {
-      // Treat CR and LF as line terminators. Skipping only LF can hide
-      // a live import after a CR-only comment from the admission gate.
+      // Treat CR/LF, NEL, and Unicode line/paragraph separators as boundaries.
+      // A live import after any comment terminator must remain visible.
       i += 2;
-      while (i < source.length && source[i] !== "\r" && source[i] !== "\n") i++;
+      while (i < source.length && !["\r", "\n", "\u0085", "\u2028", "\u2029"].includes(source[i])) i++;
       continue;
     }
     if (source.startsWith("/*", i)) {
