@@ -109,3 +109,23 @@ test("MessagePack frame admission bounds bytes before copying and rejects forged
   const result=await decodeActorMessage(domain,variants,valid);
   assert.equal(result.value,"ok");
 });
+
+test("MessagePack v2 rejects redundant integer, string and array headers",async()=>{
+ const domain="demo.Canonical.v1",integer=[{id:1,shape:"I"}];
+ const base=await encodeActorMessage(domain,integer,1,42n);
+ for(const tail of [[0xcc,42],[0xcd,0,42],[0xce,0,0,0,42],
+  [0xcf,0,0,0,0,0,0,0,42]]){
+  const frame=Uint8Array.from([...base.subarray(0,-1),...tail]);
+  await assert.rejects(decodeActorMessage(domain,integer,frame),/noncanonical integer encoding/);
+ }
+ const strVariant=[{id:1,shape:"S"}],strBase=await encodeActorMessage(domain,strVariant,1,"a");
+ await assert.rejects(decodeActorMessage(domain,strVariant,Uint8Array.from([
+  ...strBase.subarray(0,-2),0xd9,1,97
+ ])),/noncanonical string encoding/);
+ const tupleVariant=[{id:1,shape:"T[I]"}];
+ const tupleBase=await encodeActorMessage(domain,tupleVariant,1,[42n]);
+ await assert.rejects(decodeActorMessage(domain,tupleVariant,Uint8Array.from([
+  ...tupleBase.subarray(0,-2),0xdc,0,1,42
+ ])),/noncanonical array encoding/);
+ assert.equal((await decodeActorMessage(domain,integer,base)).value,42n);
+});
