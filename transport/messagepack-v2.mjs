@@ -199,8 +199,9 @@ function snapshot(input){
    length=typedSlot("byteLength").call(input);
   }
  }
- if(sharedLength){try{sharedLength.call(backing);fail("shared input rejected");}
-   catch(error){if(error?.message?.includes("shared input rejected"))throw error;}}
+ let isShared=false;
+ if(sharedLength){try{sharedLength.call(backing);isShared=true;}catch{}}
+ if(isShared)fail("shared input rejected");
  if(length>MAX)fail("message byte budget exceeded");
  const source=new Uint8Array(backing,offset,length);
  const owned=new Uint8Array(length);
