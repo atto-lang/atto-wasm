@@ -27,6 +27,30 @@ test("real Clang wasm32 bridge accepts verified IR and records hashes (stub comp
   await assert.rejects(()=>compileOresToWasm({compiler,source,output:join(dir,"bad.wasm"),compilerSha256:"0".repeat(64)}),/SHA-256/);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
+test("canonical .atto input keeps its suffix at the native compiler boundary",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"oreslang-atto-stage-test-"));
+ try{
+  const compiler=join(dir,"suffix-compiler.sh");
+  const source=join(dir,"scalar.atto");
+  const output=join(dir,"scalar.wasm");
+  const script=[
+   "#!/bin/sh",
+   'case "$1" in',
+   "  *.atto) printf 'define i64 @main() { ret i64 42 }\\n' ;;",
+   "  *) exit 81 ;;",
+   "esac",
+   ""
+  ].join("\n");
+  await writeFile(compiler,script,{mode:0o700});
+  await writeFile(source,"pub fnc main(): int { return 42; }\n");
+  const result=await compileOresToWasm({compiler,source,output});
+  assert.equal(result.importCount,0);
+  const wasm=await readFile(output);
+  assert.equal(WebAssembly.validate(wasm),true);
+  assert.equal(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.main(),42n);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
+
 test("real native Oreslang compiler integration, opt-in and never simulated",{
  skip:!process.env.ORESLANG_LLVM_COMPILER
 },async()=>{
