@@ -26,6 +26,14 @@ export class AtomicReleaseCommitUncertainError extends Error {
 }
 const paths=output=>({root:output+".releases",pointer:output+".current.json"});
 const canonical=x=>Buffer.from(JSON.stringify(x)+"\n");
+// Avoid a race between content-addressed hashing and publication.
+const typedArrayProto=Object.getPrototypeOf(Uint8Array.prototype);
+const actualBacking=Object.getOwnPropertyDescriptor(typedArrayProto,"buffer").get;
+const actualLength=Object.getOwnPropertyDescriptor(typedArrayProto,"byteLength").get;
+const sharedLength=typeof SharedArrayBuffer==="function"
+ ? Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype,"byteLength").get : null;
+const copyBytes=Function.prototype.call.bind(Uint8Array.prototype.set);
+
 // Explicit Linux/POSIX durability barrier. On filesystems without directory
 // fsync support this fails closed rather than claiming persistence.
 async function fsyncDirectory(dir){
@@ -170,8 +178,16 @@ export async function publishAtomicRelease({
 }){
  if(typeof output!=="string"||!output)fail("missing output");
  if(!(wasm instanceof Uint8Array))fail("invalid Wasm bytes");
+ let backing,length;
+ try{backing=actualBacking.call(wasm);length=actualLength.call(wasm)}
+ catch{fail("invalid Wasm byte backing")}
+ let shared=false;
+ if(sharedLength){try{sharedLength.call(backing);shared=true}catch{}}
+ if(shared)fail("shared Wasm publisher backing forbidden");
+ if(length<8||length>16777216)fail("Wasm budget");
  const destination=resolve(output),{root,pointer}=paths(destination);
- const bytes=Buffer.from(wasm);
+ const bytes=Buffer.allocUnsafe(length);
+ copyBytes(bytes,wasm);
  const {seal,releaseSha256}=descriptorFor(bytes,manifest,provenance);
  const provenanceBytes=canonical(provenance);
  const manifestBytes=manifest===null?null:canonical(manifest);
