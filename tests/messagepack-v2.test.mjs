@@ -88,3 +88,24 @@ test("oversized input, spoofed domain, duplicate IDs and shared buffers fail clo
   await assert.rejects(decodeActorMessage(domain,variants,s),/shared/);
  }
 });
+
+test("MessagePack frame admission bounds bytes before copying and rejects forged shared backing",async()=>{
+  const domain="demo.Actor.v1",variants=[{id:1,shape:"S"}];
+  const large=new Uint8Array(1048577);
+  const originalFrom=Uint8Array.from;
+  let copied=0;
+  Uint8Array.from=function(...args){copied++;return Reflect.apply(originalFrom,Uint8Array,args);};
+  try{
+    await assert.rejects(decodeActorMessage(domain,variants,large),/message byte budget exceeded/);
+    assert.equal(copied,0,"oversized frame was copied before budget admission");
+  }finally{Uint8Array.from=originalFrom;}
+  if(typeof SharedArrayBuffer==="function"){
+    const shared=new Uint8Array(new SharedArrayBuffer(32));
+    Object.defineProperty(shared,"buffer",{get(){return new ArrayBuffer(32);}});
+    await assert.rejects(decodeActorMessage(domain,variants,shared),/shared input rejected/);
+  }
+  const valid=await encodeActorMessage(domain,variants,1,"ok");
+  Object.defineProperty(valid,Symbol.iterator,{get(){throw Error("attacker iterator invoked");}});
+  const result=await decodeActorMessage(domain,variants,valid);
+  assert.equal(result.value,"ok");
+});
