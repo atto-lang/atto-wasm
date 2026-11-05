@@ -31,7 +31,8 @@ test("noncanonical padded unsigned LEB128 cannot impersonate canonical sections 
   ...part(7,exp),...part(10,code)
  ]);
  for(const bytes of [aliasSection,aliasTypeCount,aliasFuncIndex]){
-  assert.equal(WebAssembly.validate(bytes),false);
+  // Wasm permits padded LEB128; the AttoLang ABI intentionally requires
+  // a single canonical binary spelling even when the engine accepts it.
   assert.throws(()=>assertCoreI64Entry(bytes,"main"),
     /noncanonical Wasm ABI integer/);
  }
