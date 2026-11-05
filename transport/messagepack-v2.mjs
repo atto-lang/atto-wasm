@@ -66,6 +66,23 @@ function contract(domain,alternatives){
  }
  return {byId,bySchema};
 }
+// Only bounded own enumerable data slots may enter a MessagePack payload.
+// Cross-realm arrays remain valid. Proxies can still invoke reflection traps;
+// external callers must enforce a separate trusted-data boundary.
+function ownPayloadSlots(input){
+ if(!Array.isArray(input))fail("sequence required");
+ const size=Object.getOwnPropertyDescriptor(input,"length")?.value;
+ if(!Number.isSafeInteger(size)||size>ELEMENTS)fail("sequence length exceeded");
+ if(Reflect.ownKeys(input).length!==size+1)fail("sequence requires own data slots");
+ const slots=[];
+ for(let i=0;i<size;i++){
+  const d=Object.getOwnPropertyDescriptor(input,String(i));
+  if(!d||!d.enumerable||!Object.hasOwn(d,"value"))fail("sequence requires own data slots");
+  slots.push(d.value);
+ }
+ return slots;
+}
+
 class Writer {
  constructor(){this.bytes=[];this.nodes=0;this.visiting=new Set();}
  u8(x){if(this.bytes.length>=MAX)fail("byte budget exceeded");this.bytes.push(x&255);}
@@ -115,14 +132,15 @@ class Writer {
    }
    case "S":this.string(x);return;
   }
-  if(!Array.isArray(x)||x.length>ELEMENTS)fail("sequence required");
+  // Snapshot the caller-owned array before encoding; never execute getters.
+  const values=ownPayloadSlots(x);
   const fixed=["T","FA","FL"].includes(shape.kind);
-  if(fixed&&x.length!==shape.children.length)fail("wrong fixed arity");
+  if(fixed&&values.length!==shape.children.length)fail("wrong fixed arity");
   if(this.visiting.has(x))fail("cyclic message sequence");
   this.visiting.add(x);
   try{
-   this.arr(x.length);
-   for(let i=0;i<x.length;i++)this.value(fixed?shape.children[i]:shape.children[0],x[i],d+1);
+   this.arr(values.length);
+   for(let i=0;i<values.length;i++)this.value(fixed?shape.children[i]:shape.children[0],values[i],d+1);
   }finally{this.visiting.delete(x);}
  }
  finish(){return Uint8Array.from(this.bytes);}
