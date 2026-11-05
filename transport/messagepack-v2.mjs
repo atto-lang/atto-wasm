@@ -128,6 +128,12 @@ class Reader {
   let v=this.uint(size);
   if(t>=208){const mask=1n<<BigInt(size*8);if(v&(mask>>1n))v-=mask;}
   if(v<-(1n<<63n)||v>(1n<<63n)-1n)fail("i64 overflow");
+  // Reject alternate widths for the same signed i64 value.
+  if((t===0xcc&&v<=127n)||(t===0xcd&&v<=255n)||
+     (t===0xce&&v<=65535n)||(t===0xcf&&v<=4294967295n)||
+     (t===0xd0&&v>=-32n)||(t===0xd1&&v>=-128n)||
+     (t===0xd2&&v>=-32768n)||(t===0xd3&&v>=-2147483648n))
+    fail("noncanonical integer encoding");
   return v;
  }
  str(){
@@ -138,6 +144,8 @@ class Reader {
   else if(t===0xdb)n=Number(this.uint(4));
   else fail("expected UTF-8 string");
   if(n>MAX)fail("string size exceeded");
+  if((t===0xd9&&n<=31)||(t===0xda&&n<=255)||(t===0xdb&&n<=65535))
+    fail("noncanonical string encoding");
   try{return decoder.decode(this.take(n));}catch{fail("invalid UTF-8");}
  }
  arr(){
@@ -146,6 +154,8 @@ class Reader {
   else if(t===0xdc)n=Number(this.uint(2));
   else if(t===0xdd)n=Number(this.uint(4));
   else fail("expected MessagePack array");
+  if((t===0xdc&&n<16)||(t===0xdd&&n<=65535))
+    fail("noncanonical array encoding");
   if(n>ELEMENTS||n>this.b.length-this.at||n>NODES-this.nodes)fail("invalid sequence count");
   return n;
  }
