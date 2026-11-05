@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {mkdtemp,writeFile,stat,rename,symlink,rm,mkdir} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {readBounded} from "../scripts/compile-ores.mjs";
+import {readBounded,compileOresToWasm} from "../scripts/compile-ores.mjs";
 
 const withDirectory = async run => {
   const directory = await mkdtemp(join(tmpdir(),"atto-wasm-fd-admission-"));
@@ -57,5 +57,21 @@ test("input size and empty-file limits fail without allocating an unbounded copy
   await assert.rejects(readBounded(empty,1024,"source"),/empty/);
   await assert.rejects(readBounded(oversized,1024,"source"),/1 MiB/);
   await assert.rejects(readBounded(oversized,-1,"source"),/invalid bounded/);
+ });
+});
+
+test("full compiler bridge rejects original source symlink leaf before execution",async()=>{
+ await withDirectory(async directory=>{
+  const actual=join(directory,"original.atto");
+  const source=join(directory,"untrusted.atto");
+  const compiler=join(directory,"compiler");
+  const output=join(directory,"wasm-output.wasm");
+  await writeFile(actual,"fnc main():int{return 42;}");
+  await writeFile(compiler,"not a compiler: should never be executed");
+  await symlink(actual,source);
+  await assert.rejects(
+    compileOresToWasm({compiler,source,output}),
+    /ELOOP|symbolic link|symlink/i
+  );
  });
 });
