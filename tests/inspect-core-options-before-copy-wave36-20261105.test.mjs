@@ -31,7 +31,7 @@ test('sliced DataView is bounded by its own exact byte length and snapshotted', 
   const moduleBytes = [...header, 0, 1, 0];
   backing.set(moduleBytes, 9);
   const view = new DataView(backing.buffer, 9, moduleBytes.length);
-  assert.equal(WebAssembly.validate(view), true);
+  assert.equal(WebAssembly.validate(new Uint8Array(backing.buffer, 9, moduleBytes.length)), true);
   assert.throws(
     () => inspectWasmBytes(view, {maxModuleBytes: moduleBytes.length - 1}),
     /Wasm module exceeds maximum byte size/,
