@@ -41,7 +41,12 @@ export function inspectWasmBytes(input,{maxModuleBytes=1048576,maxMemoryPages=32
    const b=bytes[at++];
    if(i===4&&(b&0xf0)!==0)fail("invalid u32 encoding");
    value+=(b&0x7f)*2**(7*i);
-   if((b&0x80)===0)return value;
+   if((b&0x80)===0){
+    // WebAssembly accepts padded LEB128, but distinct bytes must not alias
+    // one admission identity in our canonical host-inspection contract.
+    if(i>0&&b===0)fail("noncanonical unsigned integer");
+    return value;
+   }
   }
   fail("overlong unsigned integer");
  };
