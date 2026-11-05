@@ -42,14 +42,27 @@ function contract(domain,alternatives){
  if(!printable(domain)||domain.includes("#variant=")||domain.length>230)fail("invalid domain");
  if(!Array.isArray(alternatives)||!alternatives.length||alternatives.length>64)fail("expected 1-64 alternatives");
  const byId=new Map(),bySchema=new Map();
- for(const x of alternatives){
-  if(!x||!Number.isSafeInteger(x.id)||x.id<1||x.id>2147483647)fail("invalid variant ID");
-  if(byId.has(x.id))fail("duplicate variant ID");
-  const schema=domain+"#variant="+x.id;
+ // Caller-owned arrays and variant records may have hostile iterators or
+ // dynamic accessors. Snapshot each own DATA slot exactly once.
+ for(let i=0;i<alternatives.length;i++){
+  const slot=Object.getOwnPropertyDescriptor(alternatives,String(i));
+  if(!slot||!Object.hasOwn(slot,"value"))fail("variant list requires own data slots");
+  const x=slot.value;
+  if(!x||typeof x!=="object"||Array.isArray(x))
+    fail("variant entry requires data record");
+  const idField=Object.getOwnPropertyDescriptor(x,"id");
+  const shapeField=Object.getOwnPropertyDescriptor(x,"shape");
+  if(!idField||!shapeField||!Object.hasOwn(idField,"value")||
+     !Object.hasOwn(shapeField,"value"))
+    fail("variant entry requires own data ID and shape");
+  const id=idField.value,descriptor=shapeField.value;
+  if(!Number.isSafeInteger(id)||id<1||id>2147483647)fail("invalid variant ID");
+  if(byId.has(id))fail("duplicate variant ID");
+  const schema=domain+"#variant="+id;
   if(schema.length>256)fail("schema ID length exceeded");
-  const shape=parseShape(x.shape);
-  const entry=Object.freeze({id:x.id,schema,descriptor:x.shape,shape});
-  byId.set(x.id,entry);bySchema.set(schema,entry);
+  const shape=parseShape(descriptor);
+  const entry=Object.freeze({id,schema,descriptor,shape});
+  byId.set(id,entry);bySchema.set(schema,entry);
  }
  return {byId,bySchema};
 }
