@@ -38,5 +38,5 @@ test('entry export must be a function with an i64 result', () => {
 test('truncated export-name storage is rejected before name comparison', () => {
   const truncated=Uint8Array.from([...header,...sec(1,[1,0x60,0,1,0x7e]),
     ...sec(3,[1,0]),7,4,1,4,109,97]);
-  assert.throws(()=>assertCoreI64Entry(truncated,'main'),/malformed Wasm ABI export name/);
+  assert.throws(()=>assertCoreI64Entry(truncated,'main'),/malformed Wasm ABI name/);
 });
