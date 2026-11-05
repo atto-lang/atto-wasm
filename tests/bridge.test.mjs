@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp,writeFile,chmod,readFile,rm} from "node:fs/promises";
+import {mkdtemp,writeFile,chmod,readFile,rm,symlink} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createHash} from "node:crypto";
@@ -127,6 +127,23 @@ test("unknown source extensions are rejected before stub compiler invocation",as
    const source=join(dir,name);
    await writeFile(source,"pub fnc main(): int { return 42; }\n");
    await assert.rejects(()=>compileOresToWasm({compiler,source,output}),/canonical .*atto.*ores/);
+  }
+  await assert.rejects(()=>readFile(marker),/ENOENT/);
+  await assert.rejects(()=>readFile(output),/ENOENT/);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
+
+test("source alias cannot swap .atto and .ores identity before compiler execution",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"oreslang-wasm-alias-extension-"));
+ try{
+  const marker=join(dir,"compiler-invoked"),compiler=join(dir,"fake.sh"),output=join(dir,"guest.wasm");
+  await writeFile(compiler,["#!/bin/sh",'touch "'+marker+'"',"exit 1",""].join("\n"),{mode:0o700});
+  for(const [realName,aliasName] of [["real.ores","alias.atto"],["real.atto","alias.ores"],["real.ores","alias.ATTO"]]){
+   const real=join(dir,realName),alias=join(dir,aliasName);
+   await writeFile(real,"pub fnc main(): int { return 42; }\n");
+   await symlink(real,alias);
+   await assert.rejects(()=>compileOresToWasm({compiler,source:alias,output}),/source alias extension differs/);
+   await rm(alias);
   }
   await assert.rejects(()=>readFile(marker),/ENOENT/);
   await assert.rejects(()=>readFile(output),/ENOENT/);
