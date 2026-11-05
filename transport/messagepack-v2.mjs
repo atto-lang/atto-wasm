@@ -115,14 +115,28 @@ class Writer {
    }
    case "S":this.string(x);return;
   }
-  if(!Array.isArray(x)||x.length>ELEMENTS)fail("sequence required");
+  if(!Array.isArray(x))fail("sequence required");
+  const count=Object.getOwnPropertyDescriptor(x,"length")?.value;
+  if(!Number.isSafeInteger(count)||count>ELEMENTS)fail("sequence required");
   const fixed=["T","FA","FL"].includes(shape.kind);
-  if(fixed&&x.length!==shape.children.length)fail("wrong fixed arity");
+  if(fixed&&count!==shape.children.length)fail("wrong fixed arity");
+  // All payload elements are DATA slots. Reading x[i] can execute a getter,
+  // change its contents during serialization or bypass typed admission.
+  if(Reflect.ownKeys(x).length!==count+1)
+   fail("payload sequence must contain only own data slots");
+  const elements=[];
+  for(let i=0;i<count;i++){
+   const slot=Object.getOwnPropertyDescriptor(x,String(i));
+   if(!slot?.enumerable || !Object.hasOwn(slot,"value"))
+    fail("payload sequence requires own data slots");
+   elements.push(slot.value);
+  }
   if(this.visiting.has(x))fail("cyclic message sequence");
   this.visiting.add(x);
   try{
-   this.arr(x.length);
-   for(let i=0;i<x.length;i++)this.value(fixed?shape.children[i]:shape.children[0],x[i],d+1);
+   this.arr(count);
+   for(let i=0;i<count;i++)
+    this.value(fixed?shape.children[i]:shape.children[0],elements[i],d+1);
   }finally{this.visiting.delete(x);}
  }
  finish(){return Uint8Array.from(this.bytes);}
