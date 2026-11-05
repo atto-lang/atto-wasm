@@ -205,6 +205,9 @@ const typedProto=Object.getPrototypeOf(Uint8Array.prototype);
 const typedSlot=k=>Object.getOwnPropertyDescriptor(typedProto,k).get;
 const dataSlot=k=>Object.getOwnPropertyDescriptor(DataView.prototype,k).get;
 const copyBytes=Function.prototype.call.bind(Uint8Array.prototype.set);
+// Wipe decoder-owned copies on every exit path without using a mutable
+// caller-provided method or depending on a monkey-patched prototype.
+const wipeBytes=Function.prototype.call.bind(Uint8Array.prototype.fill);
 function snapshot(input){
  let backing,offset=0,length;
  try{
@@ -247,6 +250,7 @@ export async function encodeCollectionV2(schema,descriptor,payload){
 export async function decodeCollectionV2(schema,descriptor,input){
  if(!printable(schema)||schema.length>256)fail("invalid collection schema");
  const shape=parseShape(descriptor),bytes=snapshot(input);
+ try {
  if(bytes.length>MAX)fail("message byte budget exceeded");
  const r=new Reader(bytes);
  if(r.arr()!==4||r.int()!==2n)fail("unsupported envelope version/arity");
@@ -259,6 +263,7 @@ export async function decodeCollectionV2(schema,descriptor,input){
  const w=new Writer();w.value(shape,value);
  if(!equal(bytes,makeWire(schema,expected,w.finish())))fail("noncanonical MessagePack encoding");
  return value;
+ } finally { wipeBytes(bytes,0); }
 }
 
 export async function encodeActorMessage(domain,alternatives,variantId,payload){
@@ -270,6 +275,7 @@ export async function encodeActorMessage(domain,alternatives,variantId,payload){
 }
 export async function decodeActorMessage(domain,alternatives,input){
  const {bySchema}=contract(domain,alternatives),bytes=snapshot(input);
+ try {
  if(bytes.length>MAX)fail("message byte budget exceeded");
  // Parse only a detached snapshot; raw caller memory may change during hashing.
  const r=new Reader(bytes);
@@ -286,5 +292,6 @@ export async function decodeActorMessage(domain,alternatives,input){
  const encoded=makeWire(entry.schema,expected,canonical.finish());
  if(!equal(bytes,encoded))fail("noncanonical MessagePack encoding");
  return Object.freeze({variantId:entry.id,value});
+ } finally { wipeBytes(bytes,0); }
 }
 export const MESSAGEPACK_ACTOR_V2=Object.freeze({version:2,maxBytes:MAX,maxNodes:NODES,maxDepth:DEPTH,canonical:true});
