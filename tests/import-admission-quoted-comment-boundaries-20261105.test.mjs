@@ -14,7 +14,7 @@ test('quoted import text, nested comments and lookalike names cannot trigger imp
 });
 
 test('NEL and paragraph separators terminate comments so live imports cannot hide',()=>{
-  for(const separator of ['\\u0085','\\u2028','\\u2029','\\n','\\r'])
+  for(const separator of ['\u0085','\u2028','\u2029','\n','\r'])
     assert.throws(()=>checked('// ignored import'+separator+'import "+pkg"'),/source imports require a verified native import graph/);
 });
 
