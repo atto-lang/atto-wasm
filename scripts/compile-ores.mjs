@@ -117,6 +117,10 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  const sourceSuffix=extname(sourcePath).toLowerCase();
  if(sourceSuffix!==".atto"&&sourceSuffix!==".ores")
   throw Error("source must have canonical .atto or legacy .ores extension");
+ // A path alias must not silently change its language identity when realpath
+ // resolves to a different source extension (e.g. alias.atto -> real.ores).
+ if(extname(source).toLowerCase()!==sourceSuffix)
+  throw Error("source alias extension differs from canonical source extension");
  const published=join(outputParent,basename(output));
  const protectedInputs=new Set([sourcePath,compilerPath]);
  if(!["atomic","legacy"].includes(publication))throw Error("invalid artifact publication mode");
