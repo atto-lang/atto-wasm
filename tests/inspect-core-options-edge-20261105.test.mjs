@@ -43,3 +43,10 @@ test('explicit undefined preserves documented default budget behavior', () => {
     assert.equal(result.memoryCount,0);
   }
 });
+
+test('new canonical LEB128 policy remains enforced', () => {
+  const padded = Uint8Array.from([...empty,0,0x81,0x00,0]);
+  assert.throws(() => inspectWasmBytes(padded), /noncanonical unsigned integer/);
+  const canonical = Uint8Array.from([...empty,0,1,0]);
+  assert.equal(inspectWasmBytes(canonical).bytes.length,11);
+});
