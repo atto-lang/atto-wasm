@@ -4,6 +4,12 @@ import assert from "node:assert/strict";
 test("decoder-owned MessagePack snapshots are scrubbed on success and failure",async()=>{
   const originalFill=Uint8Array.prototype.fill;
   const scrubbed=[];
+  const originalArrayFill=Array.prototype.fill;
+  const scrubbedWriterArrays=[];
+  Array.prototype.fill=function(value,...rest){
+    if(value===0 && this.length>44) scrubbedWriterArrays.push(this);
+    return Reflect.apply(originalArrayFill,this,[value,...rest]);
+  };
   // Import a fresh module while the spy is installed. The implementation
   // captures the native fill at module initialization to avoid later changes.
   Uint8Array.prototype.fill=function(value,...rest){
@@ -17,10 +23,21 @@ test("decoder-owned MessagePack snapshots are scrubbed on success and failure",a
     const frame=await codec.encodeCollectionV2(collection,shape,"private payload");
     const untouched=Uint8Array.from(frame);
     let before=scrubbed.length;
+    let writerBefore=scrubbedWriterArrays.length;
     assert.equal(await codec.decodeCollectionV2(collection,shape,frame),"private payload");
     assert.ok(scrubbed.slice(before).some(b=>b.length===frame.length && b.every(v=>v===0)),
       "successful collection decoding must scrub its owned snapshot");
+    assert.ok(scrubbed.slice(before).filter(b=>b.length===frame.length && b.every(v=>v===0)).length>=2,
+      "both the decoded frame and canonical re-encoding must be scrubbed");
+    assert.ok(scrubbedWriterArrays.slice(writerBefore).some(b=>b.length===frame.length && b.every(v=>v===0)),
+      "canonical MessagePack writer arrays must be zeroed");
     assert.deepEqual(frame,untouched,"decoder must not wipe caller bytes");
+
+    before=scrubbed.length;
+    await assert.rejects(codec.decodeCollectionV2(collection,"T[S]",frame),/shape digest mismatch/);
+    assert.ok(scrubbed.slice(before).some(b=>b.length===frame.length && b.every(v=>v===0)),
+      "asynchronous digest mismatch must also scrub its detached frame");
+    assert.deepEqual(frame,untouched,"failed digest must preserve caller bytes");
 
     const malformed=Uint8Array.from(frame);
     malformed[0]=0;
@@ -45,5 +62,6 @@ test("decoder-owned MessagePack snapshots are scrubbed on success and failure",a
       "failed actor decoding must scrub its owned snapshot");
   }finally{
     Uint8Array.prototype.fill=originalFill;
+    Array.prototype.fill=originalArrayFill;
   }
 });
