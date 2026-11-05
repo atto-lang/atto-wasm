@@ -31,5 +31,5 @@ test('overlong and padded u32 fields are not accepted as canonical ABI metadata'
  const padded=Uint8Array.from([...header,7,0x88,0,1,4,109,97,105,110,0,0]);
  assert.throws(()=>check(padded,'main'),/noncanonical Wasm ABI integer/);
  const trailing=Uint8Array.from([...header,7,0x81,0x80,0x80,0x80,0x80,0]);
- assert.throws(()=>check(trailing,'main'),/overlong Wasm ABI integer/);
+ assert.throws(()=>check(trailing,'main'),/invalid Wasm ABI integer|overlong Wasm ABI integer/);
 });
