@@ -28,8 +28,8 @@ test('entry name never authorizes a nonfunction export kind',()=>{
   assert.throws(()=>assertCoreI64Entry(moduleBytes(0),'Main'),/exact \(\) -> i64 signature/);
 });
 
-test('oversized section lengths and noncanonical u32 encodings fail closed',()=>{
+test('oversized section lengths and invalid u32 encodings fail closed',()=>{
   assert.throws(()=>assertCoreI64Entry(Uint8Array.from([...head,7,99,1]),'main'),/truncated Wasm ABI section/);
-  assert.throws(()=>assertCoreI64Entry(Uint8Array.from([...head,7,0x80,0x80,0x80,0x80,0x80]),'main'),/overlong Wasm ABI integer/);
+  assert.throws(()=>assertCoreI64Entry(Uint8Array.from([...head,7,0x80,0x80,0x80,0x80,0x80]),'main'),/invalid Wasm ABI integer/);
   assert.throws(()=>assertCoreI64Entry(Uint8Array.from([...head,7,0xff,0xff,0xff,0xff,0x10]),'main'),/invalid Wasm ABI integer/);
 });
