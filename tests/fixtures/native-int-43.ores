@@ -1,0 +1,5 @@
+// Independent real-compiler metamorphic input: differs from native-int.ores by one literal.
+// A stub compiler that always emits i64 42 must fail the paired browser CI.
+pub fnc main(): int {
+  return 40 + 3;
+}
