@@ -1,0 +1,85 @@
+name: Exact-source LLVM compiler to durable atomic Wasm
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  llvm-atomic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify complete pinned native compiler build inputs and Oreslang fixtures
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          pins = {
+            "tests/fixtures/pinned-llvm/CMakeLists.txt":"a0532561b5655e6b17f3a5a7fa786107fe6299dc",
+            "tests/fixtures/pinned-llvm/src/main/cpp/oreslang/main.cpp":"2c92ec8598693f48002fd5b5cfd7526dd6d93070",
+            "tests/fixtures/pinned-llvm/src/main/cpp/oreslang/frontend/Parser.cpp":"0c8999fc5c1a9bb84da25d6d909bd18011510df9",
+            "tests/fixtures/pinned-llvm/src/main/cpp/oreslang/frontend/Parser.hpp":"20e918030f4ba535e4dea542f08880e2eb87d5fb",
+            "tests/fixtures/pinned-llvm/src/main/cpp/oreslang/types/OwnershipChecker.cpp":"a15c45591a76921d5db17afdbe15a86f5d4a2210",
+            "tests/fixtures/pinned-llvm/src/main/cpp/oreslang/types/OwnershipChecker.hpp":"417fa18c9ff5448aebdda210fdbdd49c6fec222b",
+            "tests/fixtures/pinned-llvm/src/main/cpp/oreslang/types/OwnershipCfg.hpp":"a120ae202c7cfbe50735046d01991a22694555e6",
+            "tests/fixtures/pinned-llvm/src/main/cpp/oreslang/backend/LlvmCodegen.cpp":"f601b4b1d8396a4ced963667e08c065357ff1996",
+            "tests/fixtures/pinned-llvm/src/main/cpp/oreslang/backend/LlvmCodegen.hpp":"d31882669629d8145e5b6698e62e8c37b1e8a7e0",
+            "examples/native-int.ores":"8da5552e4e58686cef50475b9504216b075c60f7",
+            "tests/fixtures/native-int-43.ores":"9923bffd5523b31755a4cb9eb3d9f3a6b810fd6d",
+          }
+          for path,expected in pins.items():
+              actual=subprocess.check_output(["git","hash-object","--no-filters","--",path],text=True).strip()
+              staged=subprocess.check_output(["git","ls-files","-s","--",path],text=True).strip()
+              if actual!=expected or expected not in staged.split():
+                  raise SystemExit("exact pinned Git source mismatch: "+path)
+          print("PASS",len(pins),"exact private LLVM and .ores source blob pins")
+          PY
+      - name: Build native LLVM Oreslang compiler from pinned source
+        run: |
+          sudo apt-get update && sudo apt-get install -y build-essential cmake clang lld llvm-dev
+          cmake -S tests/fixtures/pinned-llvm -B build/source-llvm -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build/source-llvm --parallel 2
+          test -x build/source-llvm/oreslang-llvmc
+      - name: Compile two genuine Oreslang sources through durable atomic publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          compiler="$(realpath build/source-llvm/oreslang-llvmc)"
+          compiler_sha="$(sha256sum "$compiler" | cut -d' ' -f1)"
+          for item in "examples/native-int.ores:42" "tests/fixtures/native-int-43.ores:43"; do
+            path="${item%:*}"
+            expected="${item##*:}"
+            source="$(realpath "$path")"
+            node scripts/compile-ores.mjs \
+              "--compiler=$compiler" "--compiler-sha256=$compiler_sha" \
+              "--source=$source" "--output=$PWD/build/real-$expected.wasm" \
+              "--clang=/usr/bin/clang" "--environment=browser" "--publication=atomic"
+            test -s "build/real-$expected.wasm.current.json"
+            test ! -e "build/real-$expected.wasm"
+            test ! -e "build/real-$expected.wasm.artifact.json"
+          done
+      - name: Verify two independently sealed and admitted Wasm outputs
+        run: |
+          node --input-type=module - <<'JS'
+          import assert from 'node:assert/strict';
+          import {readAtomicRelease,inspectAtomicReleaseState} from './scripts/atomic-release.mjs';
+          const output=[];
+          for(const expected of [42n,43n]){
+            const path='build/real-'+expected+'.wasm';
+            const v=await readAtomicRelease(path);
+            const result=new WebAssembly.Instance(new WebAssembly.Module(v.wasm)).exports.main();
+            assert.equal(result,expected);
+            assert.equal(v.manifest.wasmSha256,v.provenance.wasmSha256);
+            assert.equal(v.manifest.producer.sourceSha256,v.provenance.sourceSha256);
+            const inventory=await inspectAtomicReleaseState(path);
+            assert.equal(inventory.current,v.releaseSha256);
+            assert.deepEqual(inventory.staging,[]);
+            assert.deepEqual(inventory.invalid,[]);
+            output.push(v.releaseSha256);
+          }
+          assert.notEqual(...output);
+          console.log('PASS two SHA-pinned compiled Oreslang programs, durable atomic release IDs and i64 42/43');
+          JS
