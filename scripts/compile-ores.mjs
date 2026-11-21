@@ -63,10 +63,20 @@ function run(command,args,{input}={}){
  if(output.error||output.status!==0||output.signal)throw Error("command failed ("+command+"): "+(output.error?.message||output.stderr||"exit "+output.status).slice(0,4000));
  return output.stdout||"";
 }
-export async function compileOresToWasm({compiler,source,output,exportName="main",clang=process.env.CLANG||"clang",compilerSha256,environment}){
+export async function compileOresToWasm({compiler,source,output,exportName="main",actorName,clang=process.env.CLANG||"clang",compilerSha256,environment}){
  absolute(compiler,"compiler");
  absolute(source,"source");
  absolute(output,"output");
+ // Actor mode is a distinct ABI, not an implicit fallback from scalar main.
+ // Reject bad symbol names before creating any output directories or files.
+ if(actorName!==undefined &&
+    (typeof actorName!=="string"||!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(actorName)||
+     exportName!=="main"||environment!=="browser"))
+  throw Error("actor guest requires valid actor name, default scalar export and browser environment");
+ const actorInit=actorName===undefined?null:"oreslang_wasm_actor_init";
+ const actorHandler=actorName===undefined?null:"oreslang_wasm_actor_on_message";
+ const actorTeardown=actorName===undefined?null:"oreslang_wasm_actor_teardown";
+ const entry=actorHandler||exportName;
  // Resolve the publication directory before any write and compare actual
  // physical input identities; lexical resolve() alone misses parent symlinks.
  await mkdir(dirname(output),{recursive:true});
@@ -129,12 +139,20 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
   throw Error("staged compiler input changed during execution");
  if(environment&&!/target triple = "wasm32-unknown-unknown"/.test(ir))
   throw Error("compiler did not emit wasm32 target-marked IR");
- if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
+ if(actorName!==undefined){
+  if(!new RegExp("define\\s+(?:dso_local\\s+)?void\\s+@"+actorInit+"\\s*\\(\\s*\\)").test(ir)||
+     !new RegExp("define\\s+(?:dso_local\\s+)?i64\\s+@"+actorHandler+"\\s*\\(\\s*i64\\b").test(ir)||
+     !new RegExp("define\\s+(?:dso_local\\s+)?void\\s+@"+actorTeardown+"\\s*\\(\\s*\\)").test(ir)||
+     !ir.includes("@llvm.trap"))
+   throw Error("compiler did not emit canonical trap-guarded Wasm actor ABI v2");
+ }else if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))
+  throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
  if(ir.length>2*1024*1024)throw Error("generated IR exceeds 2 MiB");
  // Avoid shell expansion and avoid relying on persistent temporary LLVM IR.
  // Clang reads the native compiler's verified stdout as LLVM IR.
  run(clang,["--target=wasm32","-x","ir","-Oz","-nostdlib",
-   "-Wl,--no-entry","-Wl,--export="+exportName,
+   "-Wl,--no-entry",...((actorName===undefined)?["-Wl,--export="+exportName]:
+      ["-Wl,--export="+actorInit,"-Wl,--export="+actorHandler,"-Wl,--export="+actorTeardown]),
    "-Wl,--initial-memory=131072","-Wl,--max-memory=131072",
    "-o",provisional,"-"],{input:ir});
  const wasm=await readBounded(provisional,MAX_WASM_BYTES,"linked Wasm");
@@ -143,19 +161,32 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  const module=new WebAssembly.Module(wasm);
  const imports=WebAssembly.Module.imports(module);
  if(imports.length)throw Error("guest Wasm unexpectedly imports host modules: "+imports.map(x=>x.module+"."+x.name).join(","));
- if(!WebAssembly.Module.exports(module).some(x=>x.name===exportName&&x.kind==="function"))throw Error("guest Wasm missing requested export");
+ const exported=WebAssembly.Module.exports(module);
+ if(actorName!==undefined){
+  if(![actorInit,actorHandler,actorTeardown].every(name=>exported.some(x=>x.name===name&&x.kind==="function")))
+   throw Error("linked guest Wasm missing required actor ABI exports");
+  const instance=new WebAssembly.Instance(module);
+  if(instance.exports[actorInit].length!==0||instance.exports[actorHandler].length!==1||
+      instance.exports[actorTeardown].length!==0)
+   throw Error("linked guest Wasm actor ABI arity mismatch");
+ }else if(!exported.some(x=>x.name===exportName&&x.kind==="function"))
+  throw Error("guest Wasm missing requested export");
  const record={
   schemaVersion:1,kind:"llvm-ores-to-wasm32-core-experimental",
   compilerSha256:actualCompilerHash,sourceSha256:sha(sourceBytes),
   llvmIrSha256:sha(Buffer.from(ir,"utf8")),wasmSha256:sha(wasm),
-  exportName,importCount:imports.length,wasmBytes:wasm.length,
+  exportName:entry,...(actorName===undefined?{}:{actorName}),importCount:imports.length,wasmBytes:wasm.length,
   clangVersion:run(clang,["--version"]).split("\n")[0],
   note:"Binary provenance: exact compiler executable bytes, not proof of source-repository commit or feature parity."
  };
  if(environment){
   const manifest={
-   schemaVersion:1,artifactType:"oreslang.core-wasm.i64-v1",
-   target:"wasm32",environment,backend:"wasm",entry:exportName,
+   schemaVersion:1,artifactType:actorName===undefined?
+    "oreslang.core-wasm.i64-v1":"oreslang.core-wasm.actor-i64-v2",
+   target:"wasm32",environment,backend:"wasm",entry,
+   ...(actorName===undefined?{}:{actor:{name:actorName,init:actorInit,
+     onMessage:actorHandler,teardown:actorTeardown,
+      lifecycle:"NEW-ACTIVE-STOPPED",messageShape:"I",instancesPerActor:1}}),
    wasmSha256:sha(wasm),wasmBytes:wasm.length,requiredCapabilities:[],
    imports:[],memory:{maximumPages:2},
    producer:{compilerSha256:actualCompilerHash,
@@ -178,7 +209,7 @@ if(calledFromCli){
  try{
   const options={};
   for(const x of process.argv.slice(2)){
-   const m=/^--(compiler|source|output|export|clang|compiler-sha256|environment)=(.*)$/.exec(x);
+   const m=/^--(compiler|source|output|export|actor|clang|compiler-sha256|environment)=(.*)$/.exec(x);
    if(!m)throw Error("unexpected CLI option: "+x);
    if(Object.hasOwn(options,m[1]))throw Error("duplicate CLI option: "+m[1]);
    options[m[1]]=m[2];
@@ -186,7 +217,8 @@ if(calledFromCli){
   const record=await compileOresToWasm({
    compiler:options.compiler,source:options.source,
    output:options.output||resolve(projectRoot,"build/guest.wasm"),
-   exportName:options.export||"main",clang:options.clang||process.env.CLANG||"clang",
+   exportName:options.export||"main",actorName:options.actor,
+   clang:options.clang||process.env.CLANG||"clang",
    compilerSha256:options["compiler-sha256"],environment:options.environment
   });
   console.log(JSON.stringify(record,null,2));
