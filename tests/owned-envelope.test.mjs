@@ -401,3 +401,293 @@ test("UTF-8 preflight admits exact byte-budget boundaries and rejects oversized 
    {maxBytes}),/byte budget exceeded/);
  }
 });
+
+
+test("normalized schema fingerprint is independent of inherited serialization and Array helpers",async()=>{
+ const message={variant:"Compute",fields:{text:"stable",n:42n}};
+ const before=await encodeMessage(contract,message);
+ const entries=[
+  [Object.prototype,"toJSON"],
+  [Array.prototype,"toJSON"],
+  [Array.prototype,"includes"],
+  [Array.prototype,"every"],
+  [Array.prototype,"map"],
+  [Array.prototype,"sort"],
+  [Array.prototype,"find"],
+  [Array.prototype,"forEach"],
+  [Array.prototype,"push"],
+  [Array.prototype,"join"]
+ ];
+ const originals=[];
+ let calls=0,after,decoded;
+ const poison=()=>{calls++;throw Error("inherited callback executed during schema admission");};
+ try{
+  for(let i=0;i<entries.length;i++){
+   const [target,key]=entries[i];
+   originals[i]=Object.getOwnPropertyDescriptor(target,key);
+   Object.defineProperty(target,key,{configurable:true,writable:true,value:poison});
+  }
+  after=await encodeMessage(contract,message);
+  decoded=await decodeMessage(contract,before);
+ }finally{
+  for(let i=entries.length-1;i>=0;i--){
+   if(!(i in originals))continue;
+   const [target,key]=entries[i];
+   if(originals[i])Object.defineProperty(target,key,originals[i]);
+   else delete target[key];
+  }
+ }
+ assert.equal(calls,0,"hostile inherited callbacks must not execute");
+ assert.deepEqual(after,before,"schema-bound bytes must not change");
+ assert.deepEqual(decoded,message);
+});
+
+
+test("primitive type rejection does not execute poisoned Set.prototype.has",async()=>{
+ const original=Object.getOwnPropertyDescriptor(Set.prototype,"has");
+ const invalid={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Bad",fields:[{name:"x",type:"not_a_primitive"}]
+ }]};
+ let called=0,pending;
+ try{
+  Object.defineProperty(Set.prototype,"has",{configurable:true,writable:true,
+   value(){called++;throw Error("Set.has prototype callback executed")}});
+  pending=encodeMessage(invalid,{variant:"Bad",fields:{x:1n}});
+ }finally{
+  if(original)Object.defineProperty(Set.prototype,"has",original);
+  else delete Set.prototype.has;
+ }
+ await assert.rejects(pending,/invalid type shape/);
+ assert.equal(called,0);
+});
+
+test("owned byte copies and u8 admission ignore poisoned Uint8Array helpers",async()=>{
+ const message={variant:"Batch",fields:{
+  pair:["hi",5n],fixed:[true,false],items:["first"],
+  state:{variant:"None",value:null},blob:new Uint8Array([0,37,255])
+ }};
+ const baseline=await encodeMessage(contract,message);
+ const expected=await decodeMessage(contract,baseline);
+ const entries=[[Uint8Array.prototype,"set"],[Uint8Array,"from"],[Uint8Array,"of"]];
+ const originals=entries.map(([owner,key])=>Object.getOwnPropertyDescriptor(owner,key));
+ let callbacks=0,after,decoded;
+ const poison=()=>{callbacks++;throw Error("poisoned typed-array intrinsic executed");};
+ try{
+  for(let i=0;i<entries.length;i++){
+   const [owner,key]=entries[i];
+   Object.defineProperty(owner,key,{configurable:true,writable:true,value:poison});
+  }
+  after=await encodeMessage(contract,message);
+  decoded=await decodeMessage(contract,baseline);
+ }finally{
+  for(let i=entries.length-1;i>=0;i--){
+   const [owner,key]=entries[i];
+   if(originals[i])Object.defineProperty(owner,key,originals[i]);
+   else delete owner[key];
+  }
+ }
+ assert.equal(callbacks,0,"hostile Uint8Array helpers must never run");
+ assert.deepEqual(after,baseline,"encoded bytes must be stable under poisoning");
+ assert.deepEqual(decoded,expected,"owned decoded byte buffers must be unchanged");
+});
+
+test("native byte brands reject forged typed-array and shared-buffer prototypes",async()=>{
+ const fields={pair:["hi",1n],fixed:[true,false],items:[],
+  state:{variant:"None",value:null},blob:new Uint8Array([1,2])};
+ const disguisedWord=new Uint16Array([0x1020]);
+ Object.setPrototypeOf(disguisedWord,Uint8Array.prototype);
+ assert.equal(disguisedWord instanceof Uint8Array,true,"exposes instanceof spoof");
+ await assert.rejects(encodeMessage(contract,{variant:"Batch",fields:{...fields,blob:disguisedWord}}),
+  /expected Uint8Array/);
+ if(typeof SharedArrayBuffer!=="undefined"){
+  const shared=new SharedArrayBuffer(64);
+  const sharedView=new Uint8Array(shared);
+  Object.setPrototypeOf(shared,ArrayBuffer.prototype);
+  assert.equal(shared instanceof SharedArrayBuffer,false,"exposes backing-buffer instanceof spoof");
+  await assert.rejects(encodeMessage(contract,{variant:"Batch",fields:{...fields,blob:sharedView}}),
+   /shared memory not admitted/);
+  await assert.rejects(decodeMessage(contract,sharedView),/shared memory not admitted/);
+ }
+ const valid=await encodeMessage(contract,{variant:"Batch",fields});
+ const roundtrip=await decodeMessage(contract,valid);
+ assert.deepEqual(roundtrip,{variant:"Batch",fields});
+});
+
+
+test("UTF-8 preflight and wire decoding ignore poisoned text prototype methods",async()=>{
+ const value={variant:"Compute",fields:{text:"safe 🚀",n:42n}};
+ const baseline=await encodeMessage(contract,value);
+ const entries=[
+  [String.prototype,"charCodeAt",()=>0],
+  [TextEncoder.prototype,"encode",()=>new Uint8Array(0)],
+  [TextDecoder.prototype,"decode",()=>"FORGED"]
+ ];
+ const originals=entries.map(([owner,key])=>Object.getOwnPropertyDescriptor(owner,key));
+ let poisonCalls=0,after,decoded,oversizedFailure;
+ try{
+  for(let i=0;i<entries.length;i++){
+   const [owner,key,wrong]=entries[i];
+   Object.defineProperty(owner,key,{configurable:true,writable:true,value:function(...args){
+    poisonCalls++;return wrong(...args);
+   }});
+  }
+  after=await encodeMessage(contract,value);
+  decoded=await decodeMessage(contract,baseline);
+  try{
+   // 3000 astral code points are 12000 UTF-8 bytes but only 6000
+   // JavaScript UTF-16 code units. A forged charCodeAt must not reduce the
+   // preflight to 6000 bytes and trigger a premature TextEncoder allocation.
+   await encodeMessage(contract,{variant:"Compute",fields:{
+    text:"🚀".repeat(3000),n:42n}},{maxBytes:6550});
+  }catch(e){oversizedFailure=e;}
+ }finally{
+  for(let i=entries.length-1;i>=0;i--){
+   const [owner,key]=entries[i];
+   if(originals[i])Object.defineProperty(owner,key,originals[i]);
+   else delete owner[key];
+  }
+ }
+ assert.equal(poisonCalls,0,"mutable text-prototype methods must never execute");
+ assert.deepEqual(after,baseline,"poisoned prototypes must not change ORM1 bytes");
+ assert.deepEqual(decoded,value,"poisoned decoder must not replace guest text");
+ assert.match(String(oversizedFailure),/byte budget exceeded/);
+});
+
+
+test("decoded message ownership survives poisoned Object.freeze and defineProperty",async()=>{
+ const fields={pair:["safe",42n],fixed:[true,false],items:["hello"],
+  state:{variant:"Some",value:[1n,"nested"]},blob:new Uint8Array([1,2])};
+ const wire=await encodeMessage(contract,{variant:"Batch",fields});
+ const savedFreeze=Object.getOwnPropertyDescriptor(Object,"freeze");
+ const savedDefine=Object.getOwnPropertyDescriptor(Object,"defineProperty");
+ const nativeDefine=Object.defineProperty;
+ let calls=0,decoded;
+ try{
+  nativeDefine(Object,"freeze",{configurable:true,writable:true,value(v){
+   calls++;return v;
+  }});
+  nativeDefine(Object,"defineProperty",{configurable:true,writable:true,value(){
+   calls++;throw Error("poisoned decoder property-definition callback");
+  }});
+  decoded=await decodeMessage(contract,wire);
+ }finally{
+  nativeDefine(Object,"freeze",savedFreeze);
+  nativeDefine(Object,"defineProperty",savedDefine);
+ }
+ assert.equal(calls,0,"mutable Object statics must not affect guest message admission");
+ assert.equal(Object.isFrozen(decoded),true);
+ assert.equal(Object.isFrozen(decoded.fields),true);
+ assert.equal(Object.isFrozen(decoded.fields.pair),true);
+ assert.equal(Object.isFrozen(decoded.fields.items),true);
+ assert.equal(Object.isFrozen(decoded.fields.state),true);
+ assert.equal(Object.isFrozen(decoded.fields.state.value),true);
+ assert.deepEqual(decoded.fields.pair,["safe",42n]);
+ assert.deepEqual(decoded.fields.items,["hello"]);
+ assert.equal(decoded.fields.blob[0],1,"binary bytes are copied, not frozen");
+});
+
+
+test("fractional schema IDs, bounds and maxBytes reject poisoned Number validators",async()=>{
+ const message={variant:"Compute",fields:{text:"safe",n:42n}};
+ const expected=await encodeMessage(contract,message);
+ const invalidId={schemaVersion:1,ownership:"copy",variants:[{
+  id:1.5,name:"Fraction",fields:[{name:"x",type:"i64"}]
+ }]};
+ const invalidBound={schemaVersion:1,ownership:"copy",variants:[{
+  id:1,name:"Fraction",fields:[{name:"x",type:{list:{element:"i64",maxLength:2.5}}}]
+ }]};
+ const originalInteger=Object.getOwnPropertyDescriptor(Number,"isInteger");
+ const originalSafe=Object.getOwnPropertyDescriptor(Number,"isSafeInteger");
+ const define=Object.defineProperty;
+ let calls=0,encoded,decoded,idFailure,boundFailure,budgetFailure;
+ try{
+  define(Number,"isInteger",{configurable:true,writable:true,
+   value(){calls++;return true;}});
+  define(Number,"isSafeInteger",{configurable:true,writable:true,
+   value(){calls++;return true;}});
+  encoded=await encodeMessage(contract,message);
+  decoded=await decodeMessage(contract,expected);
+  try{await encodeMessage(invalidId,{variant:"Fraction",fields:{x:1n}});}
+  catch(e){idFailure=e;}
+  try{await encodeMessage(invalidBound,{variant:"Fraction",fields:{x:[1n]}});}
+  catch(e){boundFailure=e;}
+  try{await encodeMessage(contract,message,{maxBytes:80.5});}
+  catch(e){budgetFailure=e;}
+ }finally{
+  define(Number,"isInteger",originalInteger);
+  define(Number,"isSafeInteger",originalSafe);
+ }
+ assert.equal(calls,0,"mutable Number validators must not execute");
+ assert.deepEqual(encoded,expected);
+ assert.deepEqual(decoded,message);
+ assert.match(String(idFailure),/invalid ID/);
+ assert.match(String(boundFailure),/invalid element bound/);
+ assert.match(String(budgetFailure),/invalid maxBytes/);
+});
+
+
+test("ABI labels are bounded ASCII independent of RegExp.prototype.test",async()=>{
+ const good={variant:"Compute",fields:{text:"ok",n:42n}};
+ const reference=await encodeMessage(contract,good);
+ const invalid=["9prefix","a-b"," space","é","A".repeat(129)];
+ const original=Object.getOwnPropertyDescriptor(RegExp.prototype,"test");
+ const define=Object.defineProperty;
+ let poisonCalls=0,again,decoded;
+ const rejected=[];
+ try{
+  define(RegExp.prototype,"test",{configurable:true,writable:true,value(){
+   poisonCalls++;return true;
+  }});
+  again=await encodeMessage(contract,good);
+  decoded=await decodeMessage(contract,reference);
+  for(const label of invalid){
+   try{
+    const bad={schemaVersion:1,ownership:"copy",variants:[{
+     id:1,name:label,fields:[]
+    }]};
+    await encodeMessage(bad,{variant:label,fields:{}});
+    rejected[rejected.length]=false;
+   }catch(e){rejected[rejected.length]=String(e).includes("invalid name");}
+  }
+ }finally{
+  if(original)define(RegExp.prototype,"test",original);
+  else delete RegExp.prototype.test;
+ }
+ assert.equal(poisonCalls,0,"ABI validation must not call mutable RegExp.test");
+ assert.deepEqual(again,reference);
+ assert.deepEqual(decoded,good);
+ assert.deepEqual(rejected,[true,true,true,true,true]);
+});
+
+test("DataView wire fields and WebCrypto digest ignore hostile method replacements",async()=>{
+ const message={variant:"Batch",fields:{pair:["safe",42n],fixed:[true,false],
+  items:["owned","bytes"],state:{variant:"Some",value:[1n,"nested"]},
+  blob:new Uint8Array([0,19,255])}};
+ const baseline=await encodeMessage(contract,message);
+ const expected=await decodeMessage(contract,baseline);
+ const names=["getUint8","getUint16","getUint32","getBigInt64",
+  "setUint8","setUint16","setUint32","setBigInt64"];
+ const entries=names.map(key=>[DataView.prototype,key]);
+ const subtle=globalThis.crypto?.subtle;
+ assert.ok(subtle&&typeof subtle.digest==="function","real SHA-256 is required");
+ const proto=Object.getPrototypeOf(subtle);
+ entries.push([Object.getOwnPropertyDescriptor(proto,"digest")?proto:subtle,"digest"]);
+ const originals=entries.map(([owner,key])=>Object.getOwnPropertyDescriptor(owner,key));
+ let calls=0,encoded,decoded;
+ const poison=()=>{calls++;throw Error("mutable wire or SHA-256 callback executed");};
+ try{
+  for(const [owner,key] of entries)
+   Object.defineProperty(owner,key,{configurable:true,writable:true,value:poison});
+  encoded=await encodeMessage(contract,message);
+  decoded=await decodeMessage(contract,baseline);
+ }finally{
+  for(let i=entries.length-1;i>=0;i--){
+   const [owner,key]=entries[i];
+   if(originals[i])Object.defineProperty(owner,key,originals[i]);
+   else delete owner[key];
+  }
+ }
+ assert.equal(calls,0,"mutable DataView and WebCrypto callbacks must not execute");
+ assert.deepEqual(encoded,baseline,"wire bytes must survive poisoned setters and digest");
+ assert.deepEqual(decoded,expected,"wire fields must survive poisoned getters and digest");
+});

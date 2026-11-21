@@ -31,6 +31,22 @@ class QemuRecoveryReceiptTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"nonzero process"):
             qemu.validate_cold_boot_receipt(transcript(error=True),HOOK,0)
 
+    def test_clean_completion_must_follow_the_verified_receipt(self):
+        report=transcript()
+        lines=report.splitlines()
+        marker="GUEST_PROCESS_CLEAN_FINISH"
+        lines.remove(marker)
+        # A stale/fabricated clean marker prior to verification cannot
+        # certify a later recovery report.
+        lines.insert(1,marker)
+        with self.assertRaisesRegex(RuntimeError,"preceded recovery receipt"):
+            qemu.validate_cold_boot_receipt("\n".join(lines)+"\n",HOOK,0)
+
+    def test_duplicate_clean_completion_never_certifies_recovery(self):
+        report=transcript()+"GUEST_PROCESS_CLEAN_FINISH\n"
+        with self.assertRaisesRegex(RuntimeError,"did not complete"):
+            qemu.validate_cold_boot_receipt(report,HOOK,0)
+
     def test_abnormal_qemu_exit_is_not_success(self):
         with self.assertRaisesRegex(RuntimeError,"abnormally"):
             qemu.validate_cold_boot_receipt(transcript(),HOOK,137)
@@ -102,6 +118,40 @@ class QemuRecoveryReceiptTest(unittest.TestCase):
         data="shell: echo GUEST_COLD_BOOT_RECOVERY_OK "+HOOK+" value=42\nGUEST_PROCESS_CLEAN_FINISH\n"
         with self.assertRaisesRegex(RuntimeError,"missing"):
             qemu.validate_cold_boot_receipt(data,HOOK,0)
+
+    def test_publish_boundary_requires_full_uart_line(self):
+        hook="__testAfterPointerRename"
+        exact=b"boot: ready\\r\\nGUEST_POWER_CUT_BOUNDARY "+hook.encode()+b"\\r\\n"
+        self.assertTrue(qemu.publish_boundary_observed(exact,"publish",hook))
+        for invalid in (
+            exact.rstrip(b"\\n"),  # Serial write is not yet complete.
+            b"shell echo GUEST_POWER_CUT_BOUNDARY "+hook.encode()+b"\\n",
+            b"GUEST_POWER_CUT_BOUNDARY "+hook.encode()+b" extra=1\\n",
+            b"GUEST_POWER_CUT_BOUNDARY "+hook.encode()+b"-other\\n",
+            b"GUEST_POWER_CUT_BOUNDARY __testBeforeCleanup\\n",
+        ):
+            with self.subTest(serial=invalid):
+                self.assertFalse(qemu.publish_boundary_observed(invalid,"publish",hook))
+        self.assertFalse(qemu.publish_boundary_observed(exact,"verify",hook))
+
+    def test_multiwriter_boundary_requires_complete_canonical_digest(self):
+        exact=b"GUEST_POWER_CUT_BOUNDARY multi2 final="+b"a"*64+b"\\n"
+        self.assertTrue(qemu.publish_boundary_observed(exact,"multi-publish","multi2"))
+        for invalid in (
+            exact.rstrip(b"\\n"), exact.replace(b" final=",b" result="),
+            exact.replace(b"a"*64,b"a"*63),
+            exact.replace(b"a"*64,b"A"*64),
+            exact+b"GUEST_PROCESS_ERROR=1\\n",
+            b"shell: "+exact,
+        ):
+            with self.subTest(serial=invalid[:96]):
+                # Appended errors are caught by the cold-boot verifier, not
+                # by the already observed and complete publish boundary.
+                if invalid.startswith(exact) and invalid!=exact:
+                    self.assertTrue(qemu.publish_boundary_observed(invalid,"multi-publish","multi2"))
+                else:
+                    self.assertFalse(qemu.publish_boundary_observed(invalid,"multi-publish","multi2"))
+        self.assertFalse(qemu.publish_boundary_observed(exact,"multi-publish","multi3"))
 
 if __name__=="__main__":
     unittest.main()
