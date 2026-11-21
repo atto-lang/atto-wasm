@@ -4,6 +4,8 @@
  * There is no fallback or mock compiler; caller must pass a real binary.
  */
 import {spawnSync} from "node:child_process";
+import {constants as fsConstants} from "node:fs";
+import {Buffer} from "node:buffer";
 import {createHash} from "node:crypto";
 import {readFile,writeFile,mkdir,mkdtemp,rm,rename,realpath,stat,lstat} from "node:fs/promises";
 import {dirname,resolve,isAbsolute,join,basename} from "node:path";
@@ -11,8 +13,37 @@ import {fileURLToPath} from "node:url";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
 import {inspectWasmBytes} from "./inspect-core-memory.mjs";
 import {publishAtomicRelease} from "./atomic-release.mjs";
+import {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
 const projectRoot=resolve(dirname(fileURLToPath(import.meta.url)),"..");
-const sha=bytes=>createHash("sha256").update(bytes).digest("hex");
+// Hold the own-property predicate used by cleanup receipts despite pollution.
+const nativeHasOwn=Object.hasOwn;
+// Regex admission must bypass both mutable RegExp.prototype.test and .exec.
+const intrinsicApply=Reflect.apply;
+// Pin native admission and serialization methods at module import. Post-import
+// monkey-patching must not bypass Wasm ABI or provenance checks.
+const intrinsicWasmNamespace=WebAssembly;
+const intrinsicWasmValidate=WebAssembly.validate;
+const intrinsicWasmModule=WebAssembly.Module;
+const intrinsicWasmImports=WebAssembly.Module.imports;
+const intrinsicWasmExports=WebAssembly.Module.exports;
+const intrinsicBufferFrom=Buffer.from;
+const nativeFileModeMask=fsConstants.S_IFMT;
+const nativeFileModeRegular=fsConstants.S_IFREG;
+const isNativeFile=st=>(st.mode&nativeFileModeMask)===nativeFileModeRegular;
+const intrinsicRegExpExec=RegExp.prototype.exec;
+const intrinsicRegExp=RegExp;
+const regexExec=(pattern,value)=>
+ intrinsicApply(intrinsicRegExpExec,pattern,[value]);
+const regexMatches=(pattern,value)=>regexExec(pattern,value)!==null;
+// Compiled guest provenance is a security boundary: never dispatch through
+// mutable Hash.prototype.update/digest after module import.
+const nativeHashUpdate=createHash("sha256").update;
+const nativeHashDigest=createHash("sha256").digest;
+const sha=bytes=>{
+ const hash=createHash("sha256");
+ intrinsicApply(nativeHashUpdate,hash,[bytes]);
+ return intrinsicApply(nativeHashDigest,hash,["hex"]);
+};
 const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES=16*1024*1024;
 function rejectStartSection(bytes){
  let i=8;
@@ -35,7 +66,8 @@ async function rejectMixedPublication(published,publication){
  const conflicts=publication==="atomic"?
   [published,published+".artifact.json",published+".provenance.json"]:
   [published+".current.json",published+".releases"];
- for(const path of conflicts){
+ for(let i=0;i<conflicts.length;i++){
+   const path=conflicts[i];
   try{
    // lstat sees the directory entry itself, including dangling symlinks.
    // Following symlinks via stat() can report ENOENT for an occupied output
@@ -55,23 +87,50 @@ async function rejectMixedPublication(published,publication){
 // publisher: its publication lock and scratch compilation directory. Neither
 // is permitted to turn an already committed release into a false abort or
 // replace an uncertain-commit receipt with a generic cleanup error.
+// Cleanup receipt handling must not change the original failure or commit outcome.
+function receiptMessage(error){
+ try{return String(error?.message||error).slice(0,256)}
+ catch{return "cleanup failure (details unavailable)"}
+}
+function appendReceipt(array,value){
+ Object.defineProperty(array,String(array.length),{
+  value,writable:true,configurable:true,enumerable:true
+ });
+}
 function preserveCleanupFailure(error,scope,cleanupError){
- if(error&&typeof error==="object"){
-  error.cleanupFailures??=[];
-  error.cleanupFailures.push({
-   scope,message:String(cleanupError?.message||cleanupError).slice(0,256)
-  });
- }
+ try{
+  if(!error||typeof error!=="object")return;
+  let list=Object.getOwnPropertyDescriptor(error,"cleanupFailures")?.value;
+  if(!Array.isArray(list)){
+   list=[];
+   Object.defineProperty(error,"cleanupFailures",{
+    value:list,writable:true,configurable:true,enumerable:true
+   });
+  }
+  appendReceipt(list,{scope,message:receiptMessage(cleanupError)});
+ }catch{/* Never override a frozen or hostile primary error. */}
 }
 function attachCleanupWarning(result,scope,cleanupError){
- const warning={
-  code:"ARTIFACT_POST_COMMIT_CLEANUP_FAILED",scope,
-  message:String(cleanupError?.message||cleanupError).slice(0,256)
- };
- if(!result.cleanupWarnings)
-  result.cleanupWarnings=result.cleanupWarning?[result.cleanupWarning]:[];
- result.cleanupWarnings.push(warning);
- result.cleanupWarning??=warning;
+ try{
+  const warning={
+   code:"ARTIFACT_POST_COMMIT_CLEANUP_FAILED",scope,
+   message:receiptMessage(cleanupError)
+  };
+  let list=Object.getOwnPropertyDescriptor(result,"cleanupWarnings")?.value;
+  if(!Array.isArray(list)){
+   list=[];
+   const original=Object.getOwnPropertyDescriptor(result,"cleanupWarning")?.value;
+   if(original)appendReceipt(list,original);
+   Object.defineProperty(result,"cleanupWarnings",{
+    value:list,writable:true,configurable:true,enumerable:true
+   });
+  }
+  appendReceipt(list,warning);
+  if(!nativeHasOwn(result,"cleanupWarning"))
+   Object.defineProperty(result,"cleanupWarning",{
+    value:warning,writable:true,configurable:true,enumerable:true
+   });
+ }catch{/* Report best-effort warning without turning durable success into abort. */}
 }
 async function withPublicationLock(published,publication,callback,afterLockCleanup){
  const lock=published+".publication.lock";
@@ -125,42 +184,47 @@ export async function compileOresToWasm({
  // A lexical resolve() comparison alone can overwrite compiler/source
  // inputs through an alternate symlinked parent directory.
  await mkdir(dirname(output),{recursive:true});
- const [sourcePath,compilerPath,outputParent]=await Promise.all([
-  realpath(source),realpath(compiler),realpath(dirname(output))
- ]);
+ const sourcePath=await realpath(source);
+  const compilerPath=await realpath(compiler);
+  const outputParent=await realpath(dirname(output));
  const published=join(outputParent,basename(output));
- const protectedInputs=new Set([sourcePath,compilerPath]);
- if(!["atomic","legacy"].includes(publication))throw Error("invalid artifact publication mode");
- for(const destination of [published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases",published+".publication.lock"]){
-  if(protectedInputs.has(destination))
+ // Literal pathname comparisons do not depend on a mutable Set/array iterator.
+ if(publication!=="atomic"&&publication!=="legacy")throw Error("invalid artifact publication mode");
+ const inputOverlapPaths=[published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases",published+".publication.lock"];
+  for(let i=0;i<inputOverlapPaths.length;i++){
+   const destination=inputOverlapPaths[i];
+   if(destination===sourcePath||destination===compilerPath)
    throw Error("output or artifact metadata path overlaps a compiler/source input");
  }
- if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(exportName))throw Error("unsupported export name");
+ if(!regexMatches(/^[a-zA-Z_][a-zA-Z0-9_]*$/,exportName))throw Error("unsupported export name");
  // Preflight before readFile() to avoid allocating attacker-sized compiler
  // binaries or source buffers, then check the lengths again after reading.
- const [sourceStat,compilerStat]=await Promise.all([stat(sourcePath),stat(compilerPath)]);
- if(!sourceStat.isFile()||sourceStat.size>MAX_SOURCE_BYTES)
+ const sourceStat=await stat(sourcePath),compilerStat=await stat(compilerPath);
+ if(!isNativeFile(sourceStat)||sourceStat.size>MAX_SOURCE_BYTES)
   throw Error("source exceeds 1 MiB compiler bridge budget or is not a regular file");
- if(!compilerStat.isFile()||compilerStat.size>MAX_COMPILER_BYTES)
+ if(!isNativeFile(compilerStat)||compilerStat.size>MAX_COMPILER_BYTES)
   throw Error("compiler exceeds 256 MiB executable budget or is not a regular file");
  // A destination that already exists might itself be a symlink or hard link
  // to an input. Reject by inode identity before publishing over the link.
  // Merely canonicalizing its parent directory does not catch this case.
- for(const destination of [published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases"]){
+ const existingOutputPaths=[published,published+".provenance.json",published+".artifact.json",published+".current.json",published+".releases"];
+  for(let i=0;i<existingOutputPaths.length;i++){
+   const destination=existingOutputPaths[i];
   try{
    const existing=await stat(destination);
-   if([sourceStat,compilerStat].some(input=>
-      input.dev===existing.dev&&input.ino===existing.ino))
+   if(((sourceStat.dev===existing.dev&&sourceStat.ino===existing.ino)||
+       (compilerStat.dev===existing.dev&&compilerStat.ino===existing.ino)))
     throw Error("output or artifact metadata path overlaps a compiler/source input");
   }catch(error){if(error?.code!=="ENOENT")throw error}
  }
  await rejectMixedPublication(published,publication);
- const [sourceBytes,compilerBytes]=await Promise.all([readFile(sourcePath),readFile(compilerPath)]);
+ const sourceBytes=await readFile(sourcePath),compilerBytes=await readFile(compilerPath);
  if(sourceBytes.length>MAX_SOURCE_BYTES)throw Error("source exceeds 1 MiB compiler bridge budget");
  if(compilerBytes.length>MAX_COMPILER_BYTES)throw Error("compiler exceeds 256 MiB executable budget");
  const actualCompilerHash=sha(compilerBytes);
  if(compilerSha256!==undefined&&compilerSha256!==actualCompilerHash)throw Error("compiler binary SHA-256 does not match pinned hash");
- if(environment!==undefined&&!["browser","edge-js","edge-wasi"].includes(environment))
+ if(environment!==undefined&&environment!=="browser"&&
+     environment!=="edge-js"&&environment!=="edge-wasi")
   throw Error("unsupported portable host environment");
  // Compile exactly the already-hashed source snapshot, not a mutable path.
  // The current scalar subset supports standalone source files; relative
@@ -188,9 +252,9 @@ export async function compileOresToWasm({
  // original caller path remains unchanged.
  if(sha(await readFile(stagedSource))!==sha(sourceBytes))
   throw Error("staged compiler input changed during execution");
- if(environment&&!/target triple = "wasm32-unknown-unknown"/.test(ir))
+ if(environment&&!regexMatches(/target triple = "wasm32-unknown-unknown"/,ir))
   throw Error("compiler did not emit wasm32 target-marked IR");
- if(!new RegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)").test(ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
+ if(!regexMatches(new intrinsicRegExp("define\\s+i64\\s+@"+exportName+"\\s*\\(\\s*\\)"),ir))throw Error("compiler did not emit the expected i64 @"+exportName+"() export");
  if(ir.length>2*1024*1024)throw Error("generated IR exceeds 2 MiB");
  // Avoid shell expansion and avoid relying on persistent temporary LLVM IR.
  // Clang reads the native compiler's verified stdout as LLVM IR.
@@ -199,16 +263,22 @@ export async function compileOresToWasm({
    "-Wl,--initial-memory=131072","-Wl,--max-memory=131072",
    "-o",provisional,"-"],{input:ir});
  const wasmStat=await stat(provisional);
- if(!wasmStat.isFile()||wasmStat.size>MAX_WASM_BYTES)
+ if(!isNativeFile(wasmStat)||wasmStat.size>MAX_WASM_BYTES)
   throw Error("linked Wasm exceeds 16 MiB artifact budget");
  const wasm=await readFile(provisional);
  if(wasm.length>MAX_WASM_BYTES)throw Error("linked Wasm exceeds 16 MiB artifact budget");
- if(!WebAssembly.validate(wasm))throw Error("linker emitted invalid core Wasm");
+ if(!intrinsicApply(intrinsicWasmValidate,intrinsicWasmNamespace,[wasm]))throw Error("linker emitted invalid core Wasm");
  rejectStartSection(wasm);
- const module=new WebAssembly.Module(wasm);
- const imports=WebAssembly.Module.imports(module);
- if(imports.length)throw Error("guest Wasm unexpectedly imports host modules: "+imports.map(x=>x.module+"."+x.name).join(","));
- if(!WebAssembly.Module.exports(module).some(x=>x.name===exportName&&x.kind==="function"))throw Error("guest Wasm missing requested export");
+ const module=new intrinsicWasmModule(wasm);
+ const imports=intrinsicApply(intrinsicWasmImports,intrinsicWasmModule,[module]);
+ if(imports.length)throw Error("guest Wasm unexpectedly imports host modules");
+ let foundExport=false;
+  const exported=intrinsicApply(intrinsicWasmExports,intrinsicWasmModule,[module]);
+  for(let i=0;i<exported.length;i++){
+   const item=exported[i];
+   if(item.name===exportName&&item.kind==="function"){foundExport=true;break}
+  }
+  if(!foundExport)throw Error("guest Wasm missing requested export");
  assertCoreI64Entry(wasm,exportName);
  // The artifact manifest advertises an exact 2-page memory maximum. Check
  // the binary rather than relying on Clang flags or its version string.
@@ -218,7 +288,7 @@ export async function compileOresToWasm({
  const record={
   schemaVersion:1,kind:"llvm-ores-to-wasm32-core-experimental",
   compilerSha256:actualCompilerHash,sourceSha256:sha(sourceBytes),
-  llvmIrSha256:sha(Buffer.from(ir,"utf8")),wasmSha256:sha(wasm),
+  llvmIrSha256:sha(intrinsicApply(intrinsicBufferFrom,Buffer,[ir,"utf8"])),wasmSha256:sha(wasm),
   exportName,importCount:imports.length,wasmBytes:wasm.length,
   clangVersion:run(clang,["--version"]).split("\n")[0],
   note:"Binary provenance: exact compiler executable bytes, not proof of source-repository commit or feature parity."
@@ -231,11 +301,11 @@ export async function compileOresToWasm({
    wasmSha256:sha(wasm),wasmBytes:wasm.length,requiredCapabilities:[],
    imports:[],memory:{maximumPages:2},
    producer:{compilerSha256:actualCompilerHash,
-     sourceSha256:sha(sourceBytes),llvmIrSha256:sha(Buffer.from(ir,"utf8"))}
+     sourceSha256:sha(sourceBytes),llvmIrSha256:sha(intrinsicApply(intrinsicBufferFrom,Buffer,[ir,"utf8"]))}
   };
-  await writeFile(join(scratch,"artifact.json"),JSON.stringify(manifest,null,2)+"\n");
+  await writeFile(join(scratch,"artifact.json"),canonicalReleaseMetadata(manifest));
  }
- await writeFile(join(scratch,"provenance.json"),JSON.stringify(record,null,2)+"\n");
+ await writeFile(join(scratch,"provenance.json"),canonicalReleaseMetadata(record));
  completedResult=await withPublicationLock(published,publication,async()=>{
  if(publication==="atomic"){
   // The content-addressed release is privately staged and sealed first.
@@ -276,7 +346,7 @@ if(calledFromCli){
  try{
   const usedOptions=new Set();
   const options=Object.fromEntries(process.argv.slice(2).map(x=>{
-   const m=/^--(compiler|source|output|export|clang|compiler-sha256|environment|publication)=(.*)$/.exec(x);
+   const m=regexExec(/^--(compiler|source|output|export|clang|compiler-sha256|environment|publication)=(.*)$/,x);
    if(!m)throw Error("unexpected CLI option: "+x);
    if(usedOptions.has(m[1]))throw Error("duplicate CLI option: "+m[1]);
    usedOptions.add(m[1]);
@@ -288,6 +358,6 @@ if(calledFromCli){
    exportName:options.export||"main",clang:options.clang||process.env.CLANG||"clang",
    compilerSha256:options["compiler-sha256"],environment:options.environment,publication:options.publication||"legacy"
   });
-  console.log(JSON.stringify(record,null,2));
+  process.stdout.write(canonicalReleaseMetadata(record));
  }catch(error){console.error(error.stack||error.message);process.exitCode=1}
 }

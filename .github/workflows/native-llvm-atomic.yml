@@ -95,6 +95,18 @@ jobs:
           assert.notEqual(...output);
           console.log('PASS two SHA-pinned compiled Oreslang programs, durable atomic release IDs and i64 42/43');
           JS
+      - name: Run pinned real LLVM-to-atomic-release Node integration regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          compiler="$(realpath build/source-llvm/oreslang-llvmc)"
+          compiler_sha="$(sha256sum "$compiler" | cut -d' ' -f1)"
+          # A test timeout reports failure but does not guarantee closed
+          # child pipes. Bound the actual test process and its descendants.
+          ORESLANG_LLVM_COMPILER="$compiler" \
+          ORESLANG_LLVM_COMPILER_SHA256="$compiler_sha" \
+            timeout --signal=TERM --kill-after=15s 300s \
+            node --test --test-concurrency=1 tests/bridge.test.mjs
       - name: Record native toolchain and two sealed-release SHA-256 identities
         shell: bash
         run: |

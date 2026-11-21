@@ -9,21 +9,92 @@ import {rename,rm,mkdir,mkdtemp,lstat,chmod,open,readdir} from "node:fs/promises
 import {join,dirname,resolve} from "node:path";
 import {assertCoreI64Entry} from "./core-i64-abi.mjs";
 import {inspectWasmBytes} from "./inspect-core-memory.mjs";
-const digest=b=>createHash("sha256").update(b).digest("hex");
-const hex=x=>typeof x==="string"&&/^[0-9a-f]{64}$/.test(x);
+import {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
+export {canonicalReleaseMetadata} from "./canonical-release-json.mjs";
+// Hash.prototype.update/digest are mutable after import. Capture both
+// native methods, as well as Reflect.apply, before accepting any release.
+// Metadata digests must not execute injected callbacks or permit forged
+// digests when public Hash methods are subsequently replaced.
+const intrinsicHashUpdate=createHash("sha256").update;
+const intrinsicHashDigest=createHash("sha256").digest;
+const hashApply=Reflect.apply;
+function digest(bytes){
+ const hash=createHash("sha256");
+ hashApply(intrinsicHashUpdate,hash,[bytes]);
+ return hashApply(intrinsicHashDigest,hash,["hex"]);
+}
+// Capture native RegExp.exec: captured .test() alone would still dispatch
+// through a mutable prototype .exec and could bypass admission checks.
+const intrinsicApply=Reflect.apply;
+// Never consult mutable fs.Stats prototype predicates or mutable O_NOFOLLOW
+// flags while authenticating a release directory or opened file.
+const FILE_MODE_MASK=fsConstants.S_IFMT;
+const FILE_MODE_REGULAR=fsConstants.S_IFREG;
+const FILE_MODE_DIRECTORY=fsConstants.S_IFDIR;
+const SEALED_READ_FLAGS=fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK;
+const isNativeFile=stat=>(stat.mode&FILE_MODE_MASK)===FILE_MODE_REGULAR;
+const isNativeDirectory=stat=>(stat.mode&FILE_MODE_MASK)===FILE_MODE_DIRECTORY;
+// A rename-able pointer in a group/world-writable directory is not protected
+// by a sealed content-addressed payload. Require private owner-controlled
+// parents and release roots, including directories that existed before mkdir.
+const isPrivateDirectory=stat=>isNativeDirectory(stat)&&(stat.mode&0o022)===0;
+async function requirePrivatePointerParent(pointer){
+ const stat=await lstat(dirname(pointer));
+ if(!isPrivateDirectory(stat))fail("unsafe atomic pointer parent directory");
+}
+// Sealed-file verification must operate on the actual bytes read from disk.
+// Capture Buffer operations before any post-import prototype or static-method
+// mutation; never allow a replaced .subarray/.concat/.equals to forge bytes.
+const intrinsicBufferFrom=Buffer.from;
+const intrinsicBufferAllocUnsafe=Buffer.allocUnsafe;
+const intrinsicBufferSubarray=Buffer.prototype.subarray;
+const intrinsicBufferEquals=Buffer.prototype.equals;
+const intrinsicTextDecoder=TextDecoder;
+const intrinsicDecode=TextDecoder.prototype.decode;
+const intrinsicJSONParse=JSON.parse;
+const intrinsicWasmNamespace=WebAssembly;
+const intrinsicWasmValidate=WebAssembly.validate;
+const intrinsicWasmModule=WebAssembly.Module;
+const intrinsicWasmImports=WebAssembly.Module.imports;
+const parseUTF8JSON=bytes=>intrinsicJSONParse(intrinsicApply(intrinsicDecode,
+ new intrinsicTextDecoder("utf-8",{fatal:true}),[bytes]));
+const intrinsicUint8Array=Uint8Array;
+const intrinsicTypedArraySet=Uint8Array.prototype.set;
+const intrinsicRegExpExec=RegExp.prototype.exec;
+const regexMatches=(pattern,value)=>
+ intrinsicApply(intrinsicRegExpExec,pattern,[value])!==null;
+const hex=x=>typeof x==="string"&&regexMatches(/^[0-9a-f]{64}$/,x);
 // JSON Schema maxLength counts Unicode code points, not UTF-16 units.
 // Stop scanning at max+1; never allocate a second copy of caller text.
+const intrinsicCharCodeAt=String.prototype.charCodeAt;
 function boundedCodePoints(value,min,max){
  if(typeof value!=="string")return false;
  let n=0;
- for(const _codepoint of value)if(++n>max)return false;
+ for(let i=0;i<value.length;i++){
+  const ch=intrinsicApply(intrinsicCharCodeAt,value,[i]);
+  if(ch>=0xd800&&ch<=0xdbff&&i+1<value.length){
+   const low=intrinsicApply(intrinsicCharCodeAt,value,[i+1]);
+   if(low>=0xdc00&&low<=0xdfff)i++;
+  }
+  if(++n>max)return false;
+ }
  return n>=min;
 }
 const fail=x=>{throw Error("invalid atomic Oreslang release: "+x)};
-const arrayViewProto=Object.getPrototypeOf(Uint8Array.prototype);
-const nativeBuffer=Object.getOwnPropertyDescriptor(arrayViewProto,"buffer").get;
-const nativeOffset=Object.getOwnPropertyDescriptor(arrayViewProto,"byteOffset").get;
-const nativeLength=Object.getOwnPropertyDescriptor(arrayViewProto,"byteLength").get;
+// Capture descriptor and primitive admission intrinsics before any post-import
+// prototype pollution. A poisoned Object.hasOwn could otherwise make an
+// accessor descriptor look like a data descriptor and run a caller getter.
+const nativeHasOwn=Object.hasOwn;
+const nativeOwnKeys=Reflect.ownKeys;
+const nativeGetOwnPropertyDescriptor=Object.getOwnPropertyDescriptor;
+const nativeGetPrototypeOf=Object.getPrototypeOf;
+const nativeObjectKeys=Object.keys;
+const nativeIsArray=Array.isArray;
+const nativeIsSafeInteger=Number.isSafeInteger;
+const arrayViewProto=nativeGetPrototypeOf(Uint8Array.prototype);
+const nativeBuffer=nativeGetOwnPropertyDescriptor(arrayViewProto,"buffer").get;
+const nativeOffset=nativeGetOwnPropertyDescriptor(arrayViewProto,"byteOffset").get;
+const nativeLength=nativeGetOwnPropertyDescriptor(arrayViewProto,"byteLength").get;
 // Never ask an untrusted typed-array subclass for .length, .buffer or
 // Symbol.iterator. Buffer.from(view) consults subclass .length and can copy a
 // different number of bytes than the native Uint8Array backing view.
@@ -31,9 +102,9 @@ function ownedWasmSnapshot(wasm){
  if(isProxy(wasm))fail("invalid Wasm bytes");
  let backing,offset,length;
  try{
-  backing=nativeBuffer.call(wasm);
-  offset=nativeOffset.call(wasm);
-  length=nativeLength.call(wasm);
+  backing=intrinsicApply(nativeBuffer,wasm,[]);
+  offset=intrinsicApply(nativeOffset,wasm,[]);
+  length=intrinsicApply(nativeLength,wasm,[]);
  }catch{fail("invalid Wasm bytes")}
  // Native brand checks cannot be evaded by swapping a view/backing prototype.
  // `instanceof` is insufficient: a Uint16Array can masquerade as Uint8Array,
@@ -41,9 +112,13 @@ function ownedWasmSnapshot(wasm){
  if(!isUint8Array(wasm)||isSharedArrayBuffer(backing))
   fail("invalid Wasm bytes");
  if(length<8||length>16777216)fail("Wasm budget");
- // Newly constructed intrinsic view has no caller-controlled prototype
- // overrides; it is copied synchronously before metadata validation.
- return Buffer.from(new Uint8Array(backing,offset,length));
+ // Buffer.from(view) consults view.length, which can be replaced by an
+ // inherited getter even when Buffer.from itself is captured. Copy using
+ // native typed-array internal slots, without reading any view property.
+ const snapshot=intrinsicApply(intrinsicBufferAllocUnsafe,Buffer,[length]);
+ intrinsicApply(intrinsicTypedArraySet,snapshot,
+  [new intrinsicUint8Array(backing,offset,length)]);
+ return snapshot;
 }
 
 // A pointer rename is the visibility/linearization point. If the subsequent
@@ -60,54 +135,17 @@ export class AtomicReleaseCommitUncertainError extends Error {
  }
 }
 const paths=output=>({root:output+".releases",pointer:output+".current.json"});
-function canonical(x){
- function serialize(value,depth){
-  if(depth>16)fail("canonical metadata nesting limit");
-  if(value===null||typeof value==="string"||typeof value==="boolean"||
-      (typeof value==="number"&&Number.isFinite(value)))
-   return JSON.stringify(value);
-  if(!value||typeof value!=="object"||isProxy(value))
-   fail("invalid canonical metadata value");
-  if(Array.isArray(value)){
-   if(Object.getPrototypeOf(value)!==Array.prototype)
-    fail("invalid canonical metadata array prototype");
-   const keys=Reflect.ownKeys(value);
-   const length=Object.getOwnPropertyDescriptor(value,"length")?.value;
-   if(!Number.isSafeInteger(length)||length<0||
-      keys.length!==length+1||keys[keys.length-1]!=="length")
-    fail("invalid canonical metadata array properties");
-   const entries=[];
-   for(let i=0;i<length;i++){
-    if(keys[i]!==String(i))fail("invalid canonical metadata array index");
-    const item=Object.getOwnPropertyDescriptor(value,String(i));
-    if(!item||!Object.hasOwn(item,"value")||!item.enumerable)
-     fail("invalid canonical metadata array element");
-    entries.push(serialize(item.value,depth+1));
-   }
-   return "["+entries.join(",")+"]";
-  }
-  if(![Object.prototype,null].includes(Object.getPrototypeOf(value)))
-   fail("invalid canonical metadata prototype");
-  const keys=Object.keys(value);
-  if(Reflect.ownKeys(value).length!==keys.length)
-   fail("invalid canonical metadata hidden fields");
-  const fields=[];
-  for(const key of keys){
-   const descriptor=Object.getOwnPropertyDescriptor(value,key);
-   if(!descriptor||!descriptor.enumerable||!Object.hasOwn(descriptor,"value"))
-    fail("invalid canonical metadata field");
-   fields.push(JSON.stringify(key)+":"+serialize(descriptor.value,depth+1));
-  }
-  return "{"+fields.join(",")+"}";
- }
- return Buffer.from(serialize(x,0)+String.fromCharCode(10));
+function cleanupMessage(error){
+ try{return String(error?.message||error).slice(0,256)}
+ catch{return "cleanup failure (details unavailable)"}
 }
+const canonical=canonicalReleaseMetadata;
 // Array.length alone does not make an empty metadata array a closed record:
 // an own toJSON, symbol, non-enumerable capability or accessor would otherwise
 // be silently admitted and might be invoked by future code paths.
-const exactEmptyArray=value=>Array.isArray(value)&&!isProxy(value)&&
- Object.getPrototypeOf(value)===Array.prototype&&value.length===0&&
- Reflect.ownKeys(value).length===1&&Reflect.ownKeys(value)[0]==="length";
+const exactEmptyArray=value=>nativeIsArray(value)&&!isProxy(value)&&
+ nativeGetPrototypeOf(value)===Array.prototype&&value.length===0&&
+ nativeOwnKeys(value).length===1&&nativeOwnKeys(value)[0]==="length";
 
 // Keep runtime admission aligned with atomic-release-v1.schema.json, which
 // specifies closed records. Digest equality is not a schema/authority check.
@@ -115,15 +153,26 @@ const exactEmptyArray=value=>Array.isArray(value)&&!isProxy(value)&&
 // accessor properties, not merely count enumerable names. In particular,
 // getters could otherwise return different values during validation and seal
 // serialization, producing inconsistent source-of-authority records.
-const exactKeys=(value,keys)=>value!==null&&typeof value==="object"&&
- !isProxy(value)&&!Array.isArray(value)&&
- [Object.prototype,null].includes(Object.getPrototypeOf(value))&&
- Reflect.ownKeys(value).length===keys.length&&
- keys.every(key=>{
-  const descriptor=Object.getOwnPropertyDescriptor(value,key);
-  return !!descriptor&&descriptor.enumerable===true&&
-    Object.hasOwn(descriptor,"value");
- });
+// Explicit loops avoid prototype-pollutable Array algorithms in admission.
+function exactKeys(value,keys){
+ if(value===null||typeof value!=="object"||isProxy(value)||nativeIsArray(value))
+  return false;
+ const prototype=nativeGetPrototypeOf(value);
+ if(prototype!==Object.prototype&&prototype!==null)return false;
+ if(nativeOwnKeys(value).length!==keys.length)return false;
+ for(let i=0;i<keys.length;i++){
+  const descriptor=nativeGetOwnPropertyDescriptor(value,keys[i]);
+  if(!descriptor||descriptor.enumerable!==true||
+     !nativeHasOwn(descriptor,"value"))return false;
+ }
+ return true;
+}
+function orderedKeys(value,keys){
+ const actual=nativeObjectKeys(value);
+ if(actual.length!==keys.length)return false;
+ for(let i=0;i<keys.length;i++)if(actual[i]!==keys[i])return false;
+ return true;
+}
 // Explicit Linux/POSIX durability barrier. On filesystems without directory
 // fsync support this fails closed rather than claiming persistence.
 async function fsyncDirectory(dir){
@@ -137,27 +186,34 @@ async function durableWrite(path,bytes){
 }
 
 // Bind validation, sizing and reading to ONE open file descriptor. O_NOFOLLOW
-// prevents a file-path substitution from turning a validated regular file into
-// a symlink. Chunked reads stop at the cap even if a file grows while reading.
+// prevents a substituted symlink; exact fstat-sized reads reject concurrent
+// shortening or growth and never trust inherited fs.Stats type predicates.
 async function safeFile(path,limit){
  // O_NOFOLLOW denies symlinks. O_NONBLOCK additionally prevents a substituted
  // FIFO/device pathname from parking the verifier before fstat can reject it.
- const handle=await open(path,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|
-   fsConstants.O_NONBLOCK);
+ const handle=await open(path,SEALED_READ_FLAGS);
  try{
   const stat=await handle.stat();
-  if(!stat.isFile()||stat.size>limit)fail("invalid file");
-  const chunks=[];
-  let length=0;
-  for(;;){
-   const chunk=Buffer.allocUnsafe(Math.min(65536,limit+1-length));
-   const {bytesRead}=await handle.read(chunk,0,chunk.length,null);
-   if(bytesRead===0)break;
-   length+=bytesRead;
-   if(length>limit)fail("oversized file");
-   chunks.push(chunk.subarray(0,bytesRead));
+  // Hard links outside this directory alias the same inode but are not
+  // covered by the sealed namespace. Reject before interpreting any bytes.
+  if(!isNativeFile(stat)||stat.size>limit||stat.nlink!==1)
+   fail("invalid file");
+  // Read exactly the fstat-observed byte count into a single bounded
+  // allocation. Buffer.concat indirectly calls mutable Buffer.allocUnsafe,
+  // even if the concat function was captured before prototype pollution.
+  // Detect a concurrently shrunk or extended file instead of hashing a
+  // partial snapshot that differs from the checked inode size.
+  const bytes=intrinsicApply(intrinsicBufferAllocUnsafe,Buffer,[stat.size]);
+  let offset=0;
+  while(offset<stat.size){
+   const {bytesRead}=await handle.read(bytes,offset,stat.size-offset,null);
+   if(bytesRead===0)fail("file size changed during verification");
+   offset+=bytesRead;
   }
-  return Buffer.concat(chunks,length);
+  const extra=intrinsicApply(intrinsicBufferAllocUnsafe,Buffer,[1]);
+  const trailing=await handle.read(extra,0,1,null);
+  if(trailing.bytesRead!==0)fail("file size changed during verification");
+  return intrinsicApply(intrinsicBufferSubarray,bytes,[0,offset]);
  }finally{await handle.close()}
 }
 // Verify the exact bytes before interpreting the seal. Unlike JSON.parse,
@@ -165,36 +221,38 @@ async function safeFile(path,limit){
 // field reordering and invalid UTF-8 that other runtimes may parse differently.
 function parseCanonicalSeal(bytes){
  let seal;
- try{seal=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes))}
+ try{seal=parseUTF8JSON(bytes)}
  catch{fail("invalid release seal JSON")}
- if(!seal||typeof seal!=="object"||Array.isArray(seal)||
-    !bytes.equals(canonical(seal))||
-    Object.keys(seal).join(",")!=="schemaVersion,type,fileHashes"||
+ if(!seal||typeof seal!=="object"||nativeIsArray(seal)||
+    !intrinsicApply(intrinsicBufferEquals,bytes,[canonical(seal)])||
+    !orderedKeys(seal,["schemaVersion","type","fileHashes"])||
     !seal.fileHashes||typeof seal.fileHashes!=="object"||
-    Array.isArray(seal.fileHashes)||
-    Object.keys(seal.fileHashes).join(",")!=="wasm,manifest,provenance")
+    nativeIsArray(seal.fileHashes)||
+    !orderedKeys(seal.fileHashes,["wasm","manifest","provenance"]))
    fail("noncanonical release seal");
  return seal;
 }
 function descriptorFor(wasm,manifest,provenance){
  if(wasm.length<8||wasm.length>16777216)fail("Wasm budget");
- if(!WebAssembly.validate(wasm))fail("invalid executable Wasm");
+ if(!intrinsicApply(intrinsicWasmValidate,intrinsicWasmNamespace,[wasm]))
+  fail("invalid executable Wasm");
  if(!exactKeys(provenance,["schemaVersion","kind","compilerSha256",
       "sourceSha256","llvmIrSha256","wasmSha256","exportName","wasmBytes",
       "importCount","clangVersion","note"])||
     provenance.kind!=="llvm-ores-to-wasm32-core-experimental"||
     provenance.schemaVersion!==1||
-    !["compilerSha256","sourceSha256","llvmIrSha256"].every(k=>
-      hex(provenance[k]))||!hex(provenance.wasmSha256)||
-    !Number.isSafeInteger(provenance.wasmBytes)||provenance.wasmBytes!==wasm.length||
+    !hex(provenance.compilerSha256)||!hex(provenance.sourceSha256)||
+    !hex(provenance.llvmIrSha256)||!hex(provenance.wasmSha256)||
+    !nativeIsSafeInteger(provenance.wasmBytes)||provenance.wasmBytes!==wasm.length||
     typeof provenance.exportName!=="string"||
-    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(provenance.exportName)||
+    !regexMatches(/^[A-Za-z_][A-Za-z0-9_]*$/,provenance.exportName)||
     provenance.importCount!==0||
     !boundedCodePoints(provenance.clangVersion,1,256)||
     !boundedCodePoints(provenance.note,0,1024))
    fail("invalid producer record");
  if(provenance.wasmSha256!==digest(wasm))fail("invalid provenance digest");
- if(WebAssembly.Module.imports(new WebAssembly.Module(wasm)).length!==0)
+ if(intrinsicApply(intrinsicWasmImports,intrinsicWasmModule,
+  [new intrinsicWasmModule(wasm)]).length!==0)
    fail("guest Wasm host imports forbidden");
  try{assertCoreI64Entry(wasm,provenance.exportName)}
  catch{fail("invalid core i64 entry ABI")}
@@ -208,9 +266,10 @@ function descriptorFor(wasm,manifest,provenance){
    manifest.schemaVersion!==1||
    manifest.artifactType!=="oreslang.core-wasm.i64-v1"||
    manifest.target!=="wasm32"||manifest.backend!=="wasm"||
-   !["browser","edge-js","edge-wasi"].includes(manifest.environment)||
+   (manifest.environment!=="browser"&&manifest.environment!=="edge-js"&&
+     manifest.environment!=="edge-wasi")||
    typeof manifest.entry!=="string"||manifest.entry.length>128||
-   !/^[A-Za-z_][A-Za-z0-9_]*$/.test(manifest.entry)||
+   !regexMatches(/^[A-Za-z_][A-Za-z0-9_]*$/,manifest.entry)||
    manifest.entry!==provenance.exportName||
    manifest.wasmBytes!==wasm.length||
    !exactKeys(manifest.memory,["maximumPages"])||
@@ -232,8 +291,27 @@ function descriptorFor(wasm,manifest,provenance){
 async function verifyDir(dir,id){
  if(!hex(id))fail("invalid identity");
  const st=await lstat(dir);
- if(!st.isDirectory()||st.isSymbolicLink())fail("release is not a real directory");
+ if(!isPrivateDirectory(st))fail("release is not a real directory or has unsafe permissions");
  const seal=parseCanonicalSeal(await safeFile(join(dir,"seal.json"),16384));
+ // A content-addressed release has a CLOSED on-disk namespace: hashes of
+ // expected files do not authorize extra sidecars, executables or symlinks.
+ // Reject unknown directory entries before returning a verified identity.
+ // Do not use mutable Array.prototype predicates for these checks.
+ const entries=await readdir(dir);
+ const expectedCount=seal.fileHashes?.manifest===null?3:4;
+ if(entries.length!==expectedCount)fail("unexpected sealed release entry");
+ let wasmSeen=false,provenanceSeen=false,sealSeen=false,manifestSeen=false;
+ for(let i=0;i<entries.length;i++){
+  const name=entries[i];
+  if(name==="guest.wasm"){wasmSeen=true;continue}
+  if(name==="provenance.json"){provenanceSeen=true;continue}
+  if(name==="seal.json"){sealSeen=true;continue}
+  if(name==="artifact.json"&&expectedCount===4){manifestSeen=true;continue}
+  fail("unexpected sealed release entry");
+ }
+ if(!wasmSeen||!provenanceSeen||!sealSeen||
+    (expectedCount===4&&!manifestSeen))
+  fail("missing sealed release entry");
  if(seal.schemaVersion!==1||seal.type!=="oreslang.atomic-release-v1"||
     !hex(seal.fileHashes?.wasm)||!hex(seal.fileHashes?.provenance)||
     !(seal.fileHashes.manifest===null||hex(seal.fileHashes.manifest))||
@@ -247,8 +325,8 @@ async function verifyDir(dir,id){
     (manifestBytes&&digest(manifestBytes)!==seal.fileHashes.manifest))
    fail("release content mutated");
  let manifest,provenance;
- try{provenance=JSON.parse(provenanceBytes);
-     manifest=manifestBytes?JSON.parse(manifestBytes):null}
+ try{provenance=parseUTF8JSON(provenanceBytes);
+     manifest=manifestBytes?parseUTF8JSON(manifestBytes):null}
  catch{fail("invalid release metadata")}
  const computed=descriptorFor(wasm,manifest,provenance);
  if(computed.releaseSha256!==id)fail("release metadata mismatch");
@@ -256,19 +334,19 @@ async function verifyDir(dir,id){
 }
 export async function readAtomicRelease(output){
  const {root,pointer}=paths(resolve(output));
+ await requirePrivatePointerParent(pointer);
  const st=await lstat(root);
- if(!st.isDirectory()||st.isSymbolicLink())fail("invalid release root");
+ if(!isPrivateDirectory(st))fail("invalid release root or unsafe permissions");
  const pointerBytes=await safeFile(pointer,16384);
  let p;
- try{p=JSON.parse(pointerBytes.toString("utf8"))}
+ try{p=parseUTF8JSON(pointerBytes)}
  catch{fail("invalid current pointer JSON")}
  // Publisher emits a single canonical encoding. Reject duplicate JSON keys,
  // reordered fields or alternate encodings instead of trusting last-key-wins.
- if(!p||typeof p!=="object"||Array.isArray(p)||
-    Object.keys(p).join(",")!=="schemaVersion,releaseSha256"||
-    !pointerBytes.equals(canonical(p)))fail("noncanonical current pointer");
- if(p.schemaVersion!==1||!hex(p.releaseSha256)||
-    Object.keys(p).sort().join(",")!=="releaseSha256,schemaVersion")
+ if(!p||typeof p!=="object"||nativeIsArray(p)||
+    !orderedKeys(p,["schemaVersion","releaseSha256"])||
+    !intrinsicApply(intrinsicBufferEquals,pointerBytes,[canonical(p)]))fail("noncanonical current pointer");
+ if(p.schemaVersion!==1||!hex(p.releaseSha256))
   fail("invalid current pointer");
  return verifyDir(join(root,p.releaseSha256),p.releaseSha256);
 }
@@ -295,9 +373,11 @@ export async function publishAtomicRelease({
  if(provenanceBytes.length>16384||(manifestBytes&&manifestBytes.length>16384))
   fail("metadata exceeds 16 KiB");
  await mkdir(dirname(destination),{recursive:true});
+ // Check the pointer parent BEFORE creating a release root in it.
+ await requirePrivatePointerParent(pointer);
  await mkdir(root,{recursive:true,mode:0o700});
  const rootStat=await lstat(root);
- if(!rootStat.isDirectory()||rootStat.isSymbolicLink())fail("release root symlink");
+ if(!isPrivateDirectory(rootStat))fail("release root symlink or unsafe permissions");
  // Persist the release-root directory entry before any pointer can refer to it.
  await fsyncDirectory(dirname(root));
  const stage=await mkdtemp(join(root,".staging-"));
@@ -314,7 +394,7 @@ export async function publishAtomicRelease({
   const destinationDir=join(root,releaseSha256);
   try{await rename(stage,destinationDir)}
   catch(error){
-   if(!["EEXIST","ENOTEMPTY"].includes(error.code))throw error;
+   if((error.code!=="EEXIST"&&error.code!=="ENOTEMPTY"))throw error;
   }
   // Reject preexisting conflicting/replaced content, even if name matches.
   await verifyDir(destinationDir,releaseSha256);
@@ -357,14 +437,21 @@ export async function publishAtomicRelease({
    if(pointerDir)await rm(pointerDir,{recursive:true,force:true});
   }catch(cleanupError){
    if(primaryError){
-    primaryError.cleanupFailure=String(cleanupError?.message||cleanupError).slice(0,256);
+    try{
+     Object.defineProperty(primaryError,"cleanupFailure",{
+      value:cleanupMessage(cleanupError),configurable:true,writable:true,enumerable:true
+     });
+    }catch{/* A frozen or hostile original error must not be replaced. */}
    }else if(committedResult){
     // Durable publication is a success, not an abort. Surface the orphaned
     // temp cleanup as a warning for operator inspection.
-    committedResult.cleanupWarning={
-     code:"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED",
-     message:String(cleanupError?.message||cleanupError).slice(0,256)
-    };
+    try{
+     Object.defineProperty(committedResult,"cleanupWarning",{
+      value:{code:"ATOMIC_RELEASE_POST_COMMIT_CLEANUP_FAILED",
+       message:cleanupMessage(cleanupError)},
+      configurable:true,writable:true,enumerable:true
+     });
+    }catch{/* A durable commit remains successful despite warning failure. */}
    }else{
     throw cleanupError;
    }
@@ -383,7 +470,7 @@ export async function inspectAtomicReleaseState(output){
  let entries;
  try{
   const stat=await lstat(root);
-  if(!stat.isDirectory()||stat.isSymbolicLink())fail("invalid release root");
+  if(!isPrivateDirectory(stat))fail("invalid release root or unsafe permissions");
   entries=await readdir(root,{withFileTypes:true});
  }catch(error){
   if(error?.code==="ENOENT")
@@ -393,11 +480,11 @@ export async function inspectAtomicReleaseState(output){
  if(entries.length>4096)fail("recovery scan exceeds entry budget");
  const staging=[],unreferenced=[],invalid=[];
  for(const entry of entries){
-  if(entry.name.startsWith(".staging-")){staging.push(entry.name);continue}
-  if(!hex(entry.name)){invalid.push(entry.name);continue}
+  if(entry.name.startsWith(".staging-")){staging[staging.length]=entry.name;continue}
+  if(!hex(entry.name)){invalid[invalid.length]=entry.name;continue}
   if(entry.name===current)continue;
-  try{await verifyDir(join(root,entry.name),entry.name);unreferenced.push(entry.name)}
-  catch{invalid.push(entry.name)}
+  try{await verifyDir(join(root,entry.name),entry.name);unreferenced[unreferenced.length]=entry.name}
+  catch{invalid[invalid.length]=entry.name}
  }
  return {current,pointerError,staging,unreferenced,invalid};
 }

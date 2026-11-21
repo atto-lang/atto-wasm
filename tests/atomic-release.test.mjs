@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
-import {spawnSync} from "node:child_process";
-import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename,symlink,unlink} from "node:fs/promises";
+import {Stats} from "node:fs";
+import {spawn,spawnSync} from "node:child_process";
+import {mkdtemp,writeFile,readFile,rm,chmod,mkdir,readdir,rename,symlink,unlink,link} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {compileOresToWasm} from "../scripts/compile-ores.mjs";
-import {publishAtomicRelease,readAtomicRelease,inspectAtomicReleaseState,AtomicReleaseCommitUncertainError} from "../scripts/atomic-release.mjs";
+import {publishAtomicRelease,readAtomicRelease,inspectAtomicReleaseState,AtomicReleaseCommitUncertainError,canonicalReleaseMetadata} from "../scripts/atomic-release.mjs";
 
 async function workspace(){
  const dir=await mkdtemp(join(tmpdir(),"oreslang-atomic-release-"));
@@ -18,6 +19,17 @@ async function workspace(){
  return {dir,compiler,source,output:join(dir,"guest.wasm")};
 }
 const execute=bytes=>(new WebAssembly.Instance(new WebAssembly.Module(bytes))).exports.main();
+/** Bound test waits independently of node:test timeout. A test deadline
+ * reports failure but does not cancel open async handles or IPC children. */
+async function waitForTestBounded(label,promise,ms){
+ let timer;
+ try{
+  return await Promise.race([promise,new Promise((_,reject)=>{
+   timer=setTimeout(()=>reject(Error(label+" deadline exceeded")),ms);
+  })]);
+ }finally{clearTimeout(timer)}
+}
+
 async function cleanup(dir){
  // Test teardown is allowed to remove the root; production release readers
  // never chmod or mutate sealed content.
@@ -922,4 +934,811 @@ test("canonical sealed bytes never invoke inherited toJSON hooks",async()=>{
   else delete Array.prototype.toJSON;
   await cleanup(w.dir);
  }
+});
+
+
+test("array prototype pollution cannot alter canonical release checks or digests",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const prior=await readAtomicRelease(w.output);
+  const descriptors=["join","every","includes"].map(key=>
+   Object.getOwnPropertyDescriptor(Array.prototype,key));
+  const methods=["join","every","includes"];
+  let invoked=0,good,badEnvironment,badCompiler;
+  try{
+   // Historically join could forge serialized bytes, includes could admit
+   // unauthorized environment strings and every could skip SHA validation.
+   const replacements=[
+    function(){invoked++;return "FORGED_CANONICAL_BYTES"},
+    function(){invoked++;return true},
+    function(){invoked++;return true}
+   ];
+   for(let i=0;i<methods.length;i++)
+    Object.defineProperty(Array.prototype,methods[i],{
+     configurable:true,writable:true,value:replacements[i]
+    });
+   good=await publishAtomicRelease({
+    output:w.output,wasm:prior.wasm,manifest:prior.manifest,
+    provenance:{...prior.provenance,note:"prototype algorithm hardening"}
+   });
+   await readAtomicRelease(w.output);
+   try{
+    await publishAtomicRelease({
+     output:w.output,wasm:prior.wasm,provenance:prior.provenance,
+     manifest:{...prior.manifest,environment:"not-an-allowed-host"}
+    });
+   }catch(error){badEnvironment=error}
+   try{
+    await publishAtomicRelease({
+     output:w.output,wasm:prior.wasm,manifest:prior.manifest,
+     provenance:{...prior.provenance,compilerSha256:"invalid"}
+    });
+   }catch(error){badCompiler=error}
+  }finally{
+   for(let i=0;i<methods.length;i++)
+    Object.defineProperty(Array.prototype,methods[i],descriptors[i]);
+  }
+  assert.match(good.releaseSha256,/^[0-9a-f]{64}$/);
+  assert.match(String(badEnvironment?.message),/inconsistent manifest provenance/);
+  assert.match(String(badCompiler?.message),/invalid producer record/);
+  assert.equal(invoked,0,"metadata code must not invoke inherited collection algorithms");
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,good.releaseSha256);
+ }finally{await cleanup(w.dir)}
+});
+
+test("Unicode metadata length is not controlled by String prototype iterators",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const prior=await readAtomicRelease(w.output);
+  const pointer=await readFile(w.output+".current.json");
+  const original=Object.getOwnPropertyDescriptor(String.prototype,Symbol.iterator);
+  let invoked=0,failure;
+  try{
+   Object.defineProperty(String.prototype,Symbol.iterator,{
+    configurable:true,writable:true,
+    value:function*(){invoked++;yield "x"}
+   });
+   try{
+    await publishAtomicRelease({
+     output:w.output,wasm:prior.wasm,manifest:prior.manifest,
+     provenance:{...prior.provenance,clangVersion:"x".repeat(257)}
+    });
+   }catch(error){failure=error}
+  }finally{
+   if(original)Object.defineProperty(String.prototype,Symbol.iterator,original);
+   else delete String.prototype[Symbol.iterator];
+  }
+  assert.match(String(failure?.message),/invalid producer record/);
+  assert.equal(invoked,0,"codepoint admission must not use caller-controlled iterators");
+  assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("compiler bridge fails closed under poisoned array admission predicates",async()=>{
+ const w=await workspace();
+ const {link,unlink}=await import("node:fs/promises");
+ const originalIncludes=Object.getOwnPropertyDescriptor(Array.prototype,"includes");
+ const originalSome=Object.getOwnPropertyDescriptor(Array.prototype,"some");
+ let calls=0,modeFailure,collisionFailure,environmentFailure;
+ try{
+  await link(w.source,w.output);
+  try{
+   Object.defineProperty(Array.prototype,"includes",{configurable:true,writable:true,
+    value(){calls++;return true}});
+   Object.defineProperty(Array.prototype,"some",{configurable:true,writable:true,
+    value(){calls++;return false}});
+   try{await compileOresToWasm({...w,publication:"unsupported"})}
+   catch(error){modeFailure=error}
+   try{await compileOresToWasm({...w,publication:"legacy"})}
+   catch(error){collisionFailure=error}
+   await unlink(w.output);
+   try{await compileOresToWasm({...w,publication:"atomic",environment:"evil-host"})}
+   catch(error){environmentFailure=error}
+  }finally{
+   Object.defineProperty(Array.prototype,"includes",originalIncludes);
+   Object.defineProperty(Array.prototype,"some",originalSome);
+  }
+  assert.match(String(modeFailure?.message),/invalid artifact publication mode/);
+  assert.match(String(collisionFailure?.message),/overlaps a compiler\/source input/);
+  assert.match(String(environmentFailure?.message),/unsupported portable host environment/);
+  assert.equal(calls,0,"compiler admission must not invoke inherited array predicates");
+  assert.equal(await readFile(w.source,"utf8"),"pub fnc main(): int { return 42; }\n");
+ }finally{await cleanup(w.dir)}
+});
+
+test("legacy metadata sidecars do not invoke inherited toJSON",async()=>{
+ const w=await workspace();
+ const before=Object.getOwnPropertyDescriptor(Object.prototype,"toJSON");
+ let invoked=0;
+ try{
+  try{
+   Object.defineProperty(Object.prototype,"toJSON",{configurable:true,
+    value(){invoked++;throw Error("forbidden inherited JSON serializer")}});
+   await compileOresToWasm({...w,publication:"legacy",environment:"browser"});
+  }finally{
+   if(before)Object.defineProperty(Object.prototype,"toJSON",before);
+   else delete Object.prototype.toJSON;
+  }
+  const record=JSON.parse(await readFile(w.output+".provenance.json","utf8"));
+  const manifest=JSON.parse(await readFile(w.output+".artifact.json","utf8"));
+  assert.equal(record.schemaVersion,1);
+  assert.equal(manifest.environment,"browser");
+  assert.equal(invoked,0);
+ }finally{
+  if(before)Object.defineProperty(Object.prototype,"toJSON",before);
+  else delete Object.prototype.toJSON;
+  await cleanup(w.dir);
+ }
+});
+
+
+test("frozen original publication failure is not replaced by cleanup annotation",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const release=await readAtomicRelease(w.output);
+  const pointer=await readFile(w.output+".current.json");
+  const frozen=Object.freeze(new Error("frozen pre-commit failure"));
+  await assert.rejects(publishAtomicRelease({
+   output:w.output,wasm:release.wasm,manifest:release.manifest,
+   provenance:{...release.provenance,note:"frozen-cleanup-primary"},
+   __testBeforePointerRename:()=>{throw frozen},
+   __testBeforeCleanup:()=>{throw Error("secondary cleanup fault")}
+  }),error=>error===frozen);
+  assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("compiler scratch cleanup cannot mask a failure through inherited receipt setters",async()=>{
+ const w=await workspace();
+ const descriptor=Object.getOwnPropertyDescriptor(Object.prototype,"cleanupFailures");
+ const broken=join(w.dir,"fails.sh");
+ let setterCalls=0;
+ try{
+  await writeFile(broken,"#!/bin/sh\nexit 72\n",{mode:0o700});
+  try{
+   Object.defineProperty(Object.prototype,"cleanupFailures",{configurable:true,
+    set(){setterCalls++;throw Error("poisoned cleanupFailures setter")}});
+   await assert.rejects(compileOresToWasm({
+    ...w,compiler:broken,publication:"atomic",environment:"browser",
+    __testAfterScratchCleanup:()=>{throw Error("secondary scratch cleanup failure")}
+   }),/command failed/);
+  }finally{
+   if(descriptor)Object.defineProperty(Object.prototype,"cleanupFailures",descriptor);
+   else delete Object.prototype.cleanupFailures;
+  }
+  assert.equal(setterCalls,0);
+  await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+ }finally{
+  if(descriptor)Object.defineProperty(Object.prototype,"cleanupFailures",descriptor);
+  else delete Object.prototype.cleanupFailures;
+  await cleanup(w.dir);
+ }
+});
+
+test("canonical metadata encoder enforces exact aggregate UTF-8 byte budget",()=>{
+ const exact={k:"x".repeat(16384-9)};
+ const output=canonicalReleaseMetadata(exact);
+ assert.equal(output.length,16384,"limit includes JSON punctuation and terminal newline");
+ assert.equal(output.toString("utf8"),JSON.stringify(exact)+String.fromCharCode(10));
+ assert.throws(()=>canonicalReleaseMetadata({k:"x".repeat(16384-8)}),
+  /canonical metadata byte budget/);
+ // Count UTF-8 bytes rather than JS UTF-16 units or Unicode code points.
+ assert.throws(()=>canonicalReleaseMetadata({k:"😀".repeat(5000)}),
+  /canonical metadata byte budget/);
+ // Dense arrays must not be allowed to grow serialization output indefinitely.
+ assert.throws(()=>canonicalReleaseMetadata(Array(9000).fill(0)),
+  /canonical metadata byte budget/);
+ const longKey={["k".repeat(16385)]:0};
+ assert.throws(()=>canonicalReleaseMetadata(longKey),/canonical metadata byte budget/);
+});
+
+
+test("two publishers interleaved before pointer rename select only complete identities",{timeout:90000},async()=>{
+ const w=await workspace();
+ let resumeFirst=()=>{};
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  let entered;
+  const atBarrier=new Promise(resolve=>{entered=resolve});
+  const releaseBarrier=new Promise(resolve=>{resumeFirst=resolve});
+  const provenanceA={...baseline.provenance,note:"interleave before pointer rename A"};
+  const provenanceB={...baseline.provenance,note:"interleave before pointer rename B"};
+  const a=publishAtomicRelease({
+   output:w.output,wasm:baseline.wasm,manifest:baseline.manifest,
+   provenance:provenanceA,
+   __testBeforePointerRename:async()=>{entered();await releaseBarrier}
+  });
+  await waitForTestBounded("pre-rename barrier",Promise.race([atBarrier,a.then(
+   ()=>{throw Error("writer A completed before its pre-rename checkpoint")},
+   error=>{throw Error("writer A failed before its pre-rename checkpoint",{cause:error})}
+  )]),15000);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256,
+   "a fully installed but unselected release must remain invisible to readers");
+  const b=await publishAtomicRelease({output:w.output,wasm:baseline.wasm,
+   manifest:baseline.manifest,provenance:provenanceB});
+  assert.notEqual(b.releaseSha256,baseline.releaseSha256);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,b.releaseSha256);
+  resumeFirst();
+  const completedA=await waitForTestBounded("first publisher completion",a,25000);
+  assert.notEqual(completedA.releaseSha256,b.releaseSha256);
+  const selected=await readAtomicRelease(w.output);
+  assert.equal(selected.releaseSha256,completedA.releaseSha256);
+  assert.equal(selected.provenance.note,provenanceA.note);
+  assert.equal(selected.manifest.producer.sourceSha256,selected.provenance.sourceSha256);
+  assert.equal(execute(selected.wasm),42n);
+  const inventory=await inspectAtomicReleaseState(w.output);
+  assert.deepEqual(inventory.invalid,[]);
+  assert.ok(inventory.unreferenced.includes(b.releaseSha256));
+  assert.ok(inventory.unreferenced.includes(baseline.releaseSha256));
+ }finally{resumeFirst();await cleanup(w.dir)}
+});
+
+test("uncertain writer cannot claim current pointer after competing writer wins",{timeout:90000},async()=>{
+ const w=await workspace();
+ let resumeFirst=()=>{};
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  let entered;
+  const afterRename=new Promise(resolve=>{entered=resolve});
+  const releaseBarrier=new Promise(resolve=>{resumeFirst=resolve});
+  const provenanceA={...baseline.provenance,note:"interleave after pointer rename A"};
+  const provenanceB={...baseline.provenance,note:"interleave after pointer rename B"};
+  const resultA=publishAtomicRelease({
+   output:w.output,wasm:baseline.wasm,manifest:baseline.manifest,
+   provenance:provenanceA,
+   __testAfterPointerRename:async()=>{
+    entered();
+    await releaseBarrier;
+    throw Error("simulated uncertain pointer-parent sync")
+   }
+  }).then(()=>({unexpectedSuccess:true}),error=>({error}));
+  await waitForTestBounded("post-rename barrier",Promise.race([afterRename,resultA.then(({error})=>{
+   throw Error("writer A finished without reaching its post-rename checkpoint",{cause:error});
+  })]),15000);
+  const selectedA=await readAtomicRelease(w.output);
+  assert.equal(selectedA.provenance.note,provenanceA.note,
+   "writer A must have made its release visible");
+  const b=await publishAtomicRelease({output:w.output,wasm:baseline.wasm,
+   manifest:baseline.manifest,provenance:provenanceB});
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,b.releaseSha256);
+  resumeFirst();
+  const {error,unexpectedSuccess}=await waitForTestBounded("uncertain writer completion",resultA,25000);
+  assert.equal(unexpectedSuccess,undefined);
+  assert.ok(error instanceof AtomicReleaseCommitUncertainError);
+  assert.equal(error.code,"ATOMIC_RELEASE_COMMIT_UNCERTAIN");
+  assert.equal(error.releaseSha256,selectedA.releaseSha256);
+  assert.notEqual(error.releaseSha256,b.releaseSha256);
+  assert.equal(error.mayBePublished,true);
+  const current=await readAtomicRelease(w.output);
+  assert.equal(current.releaseSha256,b.releaseSha256,
+   "an uncertain receipt is not proof that its release remains selected");
+  assert.equal(current.provenance.note,provenanceB.note);
+  assert.equal(execute(current.wasm),42n);
+  const inventory=await inspectAtomicReleaseState(w.output);
+  assert.deepEqual(inventory.invalid,[]);
+  assert.ok(inventory.unreferenced.includes(selectedA.releaseSha256));
+ }finally{resumeFirst();await cleanup(w.dir)}
+});
+
+test("post-import poisoned own-property checks cannot execute metadata getters",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const previous=await readAtomicRelease(w.output);
+  const pointer=await readFile(w.output+".current.json");
+  let getters=0,poisonCalled=0;
+  const poisoned={...previous.provenance};
+  Object.defineProperty(poisoned,"note",{enumerable:true,configurable:true,
+   get(){getters++;throw Error("metadata getter executed")}});
+  const originalHasOwn=Object.getOwnPropertyDescriptor(Object,"hasOwn");
+  const originalKeys=Object.getOwnPropertyDescriptor(Object,"keys");
+  const originalOwnKeys=Object.getOwnPropertyDescriptor(Reflect,"ownKeys");
+  let attempt;
+  try{
+   Object.defineProperty(Object,"hasOwn",{configurable:true,writable:true,
+    value(){poisonCalled++;return true}});
+   Object.defineProperty(Object,"keys",{configurable:true,writable:true,
+    value(){poisonCalled++;return []}});
+   Object.defineProperty(Reflect,"ownKeys",{configurable:true,writable:true,
+    value(){poisonCalled++;return []}});
+   // Admission is synchronous until the first filesystem await. Restore
+   // intrinsic globals before Node's asynchronous test machinery resumes.
+   attempt=publishAtomicRelease({output:w.output,wasm:previous.wasm,
+    manifest:previous.manifest,provenance:poisoned});
+  }finally{
+   Object.defineProperty(Object,"hasOwn",originalHasOwn);
+   Object.defineProperty(Object,"keys",originalKeys);
+   Object.defineProperty(Reflect,"ownKeys",originalOwnKeys);
+  }
+  await assert.rejects(attempt,/invalid producer record/);
+  assert.equal(getters,0,"metadata accessors must not be invoked");
+  assert.equal(poisonCalled,0,"publisher must use captured own-key intrinsics");
+  assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("regex prototype poisoning cannot bypass provenance SHA or reject valid publication",async()=>{
+ const w=await workspace();
+ const priorTest=Object.getOwnPropertyDescriptor(RegExp.prototype,"test");
+ const priorExec=Object.getOwnPropertyDescriptor(RegExp.prototype,"exec");
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  const poisonedManifest={...baseline.manifest,
+   producer:{...baseline.manifest.producer,compilerSha256:"not-a-sha"}};
+  let good,bad,calls=0;
+  try{
+   // Native RegExp.test calls .exec, so capturing .test without .exec
+   // still lets a compromised prototype forge regex admission results.
+   Object.defineProperty(RegExp.prototype,"test",{configurable:true,writable:true,
+    value(){calls++;return true}});
+   Object.defineProperty(RegExp.prototype,"exec",{configurable:true,writable:true,
+    value(){calls++;return ["FORGED_MATCH"]}});
+   // Both requests run the entire synchronous admission phase before their
+   // first filesystem await. Restore the global intrinsics before awaiting.
+   good=publishAtomicRelease({output:w.output,wasm:baseline.wasm,
+    manifest:baseline.manifest,
+    provenance:{...baseline.provenance,note:"native-regex-publication"}});
+   // Attach rejection ownership synchronously, before the next event-loop turn.
+   bad=publishAtomicRelease({output:w.output,wasm:baseline.wasm,
+    manifest:poisonedManifest,
+    provenance:{...baseline.provenance,compilerSha256:"not-a-sha"}});
+   bad.catch(()=>{});
+  }finally{
+   if(priorTest)Object.defineProperty(RegExp.prototype,"test",priorTest);
+   else delete RegExp.prototype.test;
+   if(priorExec)Object.defineProperty(RegExp.prototype,"exec",priorExec);
+   else delete RegExp.prototype.exec;
+  }
+  const goodResult=await good;
+  await assert.rejects(bad,/invalid producer record/);
+  assert.equal(calls,0,"release admission must use captured native regex execution");
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,goodResult.releaseSha256);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("compiler bridge export admission ignores poisoned RegExp.test and exec",async()=>{
+ const w=await workspace();
+ try{
+  const url=new URL("../scripts/compile-ores.mjs",import.meta.url).href;
+  const options={compiler:w.compiler,source:w.source,
+   output:w.output,publication:"atomic",environment:"browser",exportName:"invalid-name"};
+  const childSource=[
+   "import {compileOresToWasm} from "+JSON.stringify(url)+";",
+   "RegExp.prototype.test=()=>true;RegExp.prototype.exec=()=>['FORGED_MATCH'];",
+   "try{await compileOresToWasm("+JSON.stringify(options)+");process.exitCode=7}",
+   "catch(e){if(String(e?.message).includes('unsupported export name'))process.exitCode=0;",
+   "else {console.error(e);process.exitCode=8}}"
+  ].join("\n");
+  const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
+   {timeout:15000,encoding:"utf8"});
+  assert.equal(child.status,0,"compiler accepted invalid export or failed unexpectedly: "+
+   JSON.stringify({status:child.status,signal:child.signal,stderr:child.stderr}));
+  await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+ }finally{await cleanup(w.dir)}
+});
+
+test("verified sealed directories reject untracked sidecars and symlinks",async()=>{
+ for(const withManifest of [false,true]){
+  const w=await workspace();
+  try{
+   await compileOresToWasm({...w,publication:"atomic",
+    ...(withManifest?{environment:"browser"}:{})});
+   const release=await readAtomicRelease(w.output);
+   const pointer=await readFile(w.output+".current.json");
+   const sealed=join(w.output+".releases",release.releaseSha256);
+   await chmod(sealed,0o700);
+   const rogue=join(sealed,"unsealed-sidecar.json");
+   await writeFile(rogue,'{"unsealedAuthority":true}');
+   await assert.rejects(readAtomicRelease(w.output),
+    /unexpected sealed release entry/);
+   // A publisher must also refuse to reuse a contaminated identical digest.
+   await assert.rejects(publishAtomicRelease({output:w.output,
+    wasm:release.wasm,manifest:release.manifest,provenance:release.provenance}),
+    /unexpected sealed release entry/);
+   assert.deepEqual(await readFile(w.output+".current.json"),pointer);
+   await unlink(rogue);
+   assert.equal((await readAtomicRelease(w.output)).releaseSha256,release.releaseSha256);
+   const dangling=join(sealed,"unsealed-symlink");
+   await symlink(join(w.dir,"absent-target"),dangling);
+   await assert.rejects(readAtomicRelease(w.output),
+    /unexpected sealed release entry/);
+   await unlink(dangling);
+   assert.equal((await readAtomicRelease(w.output)).releaseSha256,release.releaseSha256);
+  }finally{await cleanup(w.dir)}
+ }
+});
+
+test("verified pointers and payloads reject external hard links",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  const pointer=w.output+".current.json";
+  const pointerBytes=await readFile(pointer);
+  const sealed=join(w.output+".releases",baseline.releaseSha256);
+  const entries=[pointer,join(sealed,"seal.json"),join(sealed,"guest.wasm"),
+   join(sealed,"provenance.json"),join(sealed,"artifact.json")];
+  for(let i=0;i<entries.length;i++){
+   const alias=join(w.dir,"outside-hard-link-"+i);
+   await link(entries[i],alias);
+   try{
+    await assert.rejects(readAtomicRelease(w.output),/invalid file/);
+    // A same-digest publisher must not reuse a release if one of its
+    // supposedly immutable payloads has an unsealed external inode alias.
+    if(i!==0){
+     await assert.rejects(publishAtomicRelease({output:w.output,
+      wasm:baseline.wasm,manifest:baseline.manifest,
+      provenance:baseline.provenance}),/invalid file/);
+    }
+    assert.deepEqual(await readFile(pointer),pointerBytes);
+   }finally{await unlink(alias)}
+   const verified=await readAtomicRelease(w.output);
+   assert.equal(verified.releaseSha256,baseline.releaseSha256,
+    "removing external alias restores valid sealed identity");
+  }
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("independent processes racing as publishers and readers never select partial releases",
+ {timeout:120000},async()=>{
+ const w=await workspace();
+ let child=null;
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  const moduleURL=new URL("../scripts/atomic-release.mjs",import.meta.url).href;
+  // A separate Node process acts as both a reader and a real independent
+  // publisher, with no mocked transport, hook or host-side callback.
+  const childSource=[
+   "import {readAtomicRelease,publishAtomicRelease} from "+JSON.stringify(moduleURL)+";",
+   "const output="+JSON.stringify(w.output)+";",
+   "const initial=await readAtomicRelease(output);",
+   "process.stdout.write('READY\\n');",
+   "await new Promise(resolve=>process.stdin.once('data',resolve));",
+   "async function check(){",
+   " const r=await readAtomicRelease(output);",
+   " if(new WebAssembly.Instance(new WebAssembly.Module(r.wasm)).exports.main()!==42n)",
+   "  throw Error('reader observed wrong Wasm');",
+   " if(!r.manifest||r.manifest.producer.sourceSha256!==r.provenance.sourceSha256)",
+   "  throw Error('reader observed mixed provenance');",
+   "}",
+   "for(let i=0;i<15;i++)await check();",
+   "const x=await publishAtomicRelease({output,wasm:initial.wasm,",
+   " manifest:initial.manifest,provenance:{...initial.provenance,note:'external-writer'}});",
+   "for(let i=0;i<15;i++)await check();",
+   "process.stdout.write('PUBLISHED '+x.releaseSha256+'\\n');"
+  ].join("\n");
+  child=spawn(process.execPath,["--input-type=module","--eval",childSource],
+   {stdio:["pipe","pipe","pipe"],timeout:105000,killSignal:"SIGKILL"});
+  let stdout="",stderr="";
+  const done=new Promise((resolve,reject)=>{
+   child.once("error",reject);
+   // 'exit' can precede draining stdout/stderr; 'close' fires only after
+   // inherited pipes are closed, so PUBLISHED and failure logs are complete.
+   child.once("close",(code,signal)=>{
+    if(code===0)resolve();
+    else reject(Error("external release process failed: "+JSON.stringify({
+     code,signal,stderr:stderr.slice(0,2000),stdout:stdout.slice(0,2000)
+    })));
+   });
+  });
+  child.stdout.on("data",chunk=>{stdout+=chunk.toString("utf8")});
+  child.stderr.on("data",chunk=>{stderr+=chunk.toString("utf8")});
+  await waitForTestBounded("child READY handshake",Promise.race([
+   new Promise(resolve=>{
+    const checkReady=()=>{if(stdout.includes("READY\n"))resolve();
+     else child.stdout.once("data",checkReady)};
+    checkReady();
+   }),
+   done.then(()=>{throw Error("child completed without readiness handshake")})
+  ]),15000);
+  const parents=[];
+  for(let i=0;i<4;i++)
+   parents[parents.length]=publishAtomicRelease({
+    output:w.output,wasm:baseline.wasm,manifest:baseline.manifest,
+    provenance:{...baseline.provenance,note:"parent-writer-"+i}
+   });
+  // Close the write end after the handshake. Leaving stdin open keeps the
+  // child's flow-mode stdin stream alive after PUBLISHED, so 'close' never
+  // arrives and node --test can hang even though publication succeeded.
+  child.stdin.end("GO\n");
+  await waitForTestBounded("concurrent publisher phase",Promise.all(parents),70000);
+  for(let i=0;i<10;i++){
+   const current=await readAtomicRelease(w.output);
+   assert.equal(execute(current.wasm),42n);
+   assert.equal(current.manifest.producer.sourceSha256,current.provenance.sourceSha256);
+  }
+  await waitForTestBounded("external writer completion",done,15000);
+  assert.match(stdout,/PUBLISHED [0-9a-f]{64}/);
+  const external=stdout.match(/PUBLISHED ([0-9a-f]{64})/)[1];
+  const inventory=await inspectAtomicReleaseState(w.output);
+  assert.deepEqual(inventory.invalid,[]);
+  assert.ok(inventory.current===external||inventory.unreferenced.includes(external));
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{
+  if(child&&child.exitCode===null&&child.signalCode===null)
+   child.kill("SIGKILL");
+  await cleanup(w.dir);
+ }
+});
+
+
+test("sealed release read ignores post-import poisoned Buffer factory and methods",
+ {timeout:45000},async()=>{
+ const w=await workspace();
+ try{
+  const baseline=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const moduleURL=new URL("../scripts/atomic-release.mjs",import.meta.url).href;
+  const childSource=[
+   "import {readAtomicRelease} from "+JSON.stringify(moduleURL)+";",
+   "import {Buffer} from 'node:buffer';",
+   "const output="+JSON.stringify(w.output)+";",
+   "const original={",
+   " from:Buffer.from,allocUnsafe:Buffer.allocUnsafe,concat:Buffer.concat,",
+   " subarray:Buffer.prototype.subarray,equals:Buffer.prototype.equals,",
+   " toString:Buffer.prototype.toString,decode:TextDecoder.prototype.decode,",
+   " parse:JSON.parse};",
+   "let callbacks=0,identity=null;",
+   "const poison=()=>{callbacks++;throw Error('mutable Buffer/JSON method invoked')};",
+   "try{",
+   " for(const name of ['from','allocUnsafe','concat'])Buffer[name]=poison;",
+   " for(const name of ['subarray','equals','toString'])Buffer.prototype[name]=poison;",
+   " TextDecoder.prototype.decode=poison;JSON.parse=poison;",
+   " const verified=await readAtomicRelease(output);",
+   " identity=verified.releaseSha256;",
+   "}finally{",
+   " TextDecoder.prototype.decode=original.decode;JSON.parse=original.parse;",
+   " for(const name of ['from','allocUnsafe','concat'])Buffer[name]=original[name];",
+   " for(const name of ['subarray','equals','toString'])Buffer.prototype[name]=original[name];",
+   "}",
+   "if(callbacks!==0)throw Error('poisoned Buffer callback invoked: '+callbacks);",
+   "process.stdout.write(identity+'\\n');"
+  ].join("\n");
+  const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
+   {encoding:"utf8",timeout:30000});
+  assert.equal(child.status,0,"sealed reader used poisoned methods: "+String(child.stderr));
+  assert.equal(child.stdout.trim(),baseline.releaseSha256);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
+ }finally{await cleanup(w.dir)}
+});
+
+test("native Wasm snapshot ignores inherited typed-array length traps",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const prior=await readAtomicRelease(w.output);
+  const oldLength=Object.getOwnPropertyDescriptor(Uint8Array.prototype,"length");
+  const oldFrom=Object.getOwnPropertyDescriptor(Buffer,"from");
+  const typedArrayProto=Object.getPrototypeOf(Uint8Array.prototype);
+  const rawLength=Object.getOwnPropertyDescriptor(typedArrayProto,"length").get;
+  const rawBuffer=Object.getOwnPropertyDescriptor(typedArrayProto,"buffer").get;
+  const apply=Reflect.apply;
+  let aliasLengthReads=0,fromCalls=0,publication;
+  const callerBacking=apply(rawBuffer,prior.wasm,[]);
+  try{
+   Object.defineProperty(Uint8Array.prototype,"length",{
+    configurable:true,get(){
+     // Buffer.from(view) would consult length on its newly created native
+     // Uint8Array alias of the original backing. Return forged zero only for
+     // that alias; other Wasm-validation views retain their native length.
+     const n=apply(rawLength,this,[]);
+     if(!Buffer.isBuffer(this)&&apply(rawBuffer,this,[])===callerBacking){
+      aliasLengthReads++;
+      return 0;
+     }
+     return n;
+    }
+   });
+   Object.defineProperty(Buffer,"from",{
+    configurable:true,writable:true,value(){
+     fromCalls++;
+     throw Error("mutable Buffer.from invoked during publication");
+    }
+   });
+   // The publisher takes its untrusted Wasm snapshot synchronously before
+   // the first await. Restore globals before Node IO or test machinery runs.
+   publication=publishAtomicRelease({output:w.output,wasm:prior.wasm,
+    manifest:prior.manifest,
+    provenance:{...prior.provenance,note:"poisoned byte-view length must not forge Wasm"}});
+  }finally{
+   if(oldLength)Object.defineProperty(Uint8Array.prototype,"length",oldLength);
+   else delete Uint8Array.prototype.length;
+   if(oldFrom)Object.defineProperty(Buffer,"from",oldFrom);
+   else delete Buffer.from;
+  }
+  const result=await publication;
+  assert.equal(fromCalls,0,"captured native allocation cannot call overwritten Buffer.from");
+  assert.equal(aliasLengthReads,0,
+   "copy must not consult inherited length on untrusted-backing native view");
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,result.releaseSha256);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("filesystem admission ignores poisoned Stats predicates and rejects symlinked roots",
+ {timeout:45000},async()=>{
+ const w=await workspace();
+ try{
+  const baseline=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const alias=join(w.dir,"symlinked-output.wasm");
+  await symlink(w.output+".releases",alias+".releases","dir");
+  await writeFile(alias+".current.json",await readFile(w.output+".current.json"));
+  const methods=["isDirectory","isSymbolicLink","isFile"];
+  const originals=methods.map(name=>Object.getOwnPropertyDescriptor(Stats.prototype,name));
+  let callbacks=0,verified,bad;
+  try{
+   for(const name of methods)Object.defineProperty(Stats.prototype,name,{
+    configurable:true,writable:true,
+    value(){callbacks++;return name!=="isSymbolicLink"}
+   });
+   verified=await readAtomicRelease(w.output);
+   try{await readAtomicRelease(alias)}catch(error){bad=error}
+  }finally{
+   for(let i=0;i<methods.length;i++){
+    if(originals[i])Object.defineProperty(Stats.prototype,methods[i],originals[i]);
+    else delete Stats.prototype[methods[i]];
+   }
+  }
+  assert.equal(verified.releaseSha256,baseline.releaseSha256);
+  assert.match(String(bad?.message),/invalid release root/);
+  assert.equal(callbacks,0,"release verifier must inspect native stat.mode, not inherited methods");
+ }finally{await cleanup(w.dir)}
+});
+
+test("WebAssembly admission is invariant under post-import static method poisoning",async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const previous=await readAtomicRelease(w.output);
+  const oldValidate=Object.getOwnPropertyDescriptor(WebAssembly,"validate");
+  const oldModule=Object.getOwnPropertyDescriptor(WebAssembly,"Module");
+  const realModule=WebAssembly.Module;
+  const oldImports=Object.getOwnPropertyDescriptor(realModule,"imports");
+  let callbacks=0,validPublication,invalidPublication;
+  const invalid=new Uint8Array(previous.wasm);
+  invalid[0]=0xff;
+  try{
+   Object.defineProperty(WebAssembly,"validate",{configurable:true,writable:true,
+    value(){callbacks++;return true}});
+   Object.defineProperty(realModule,"imports",{configurable:true,writable:true,
+    value(){callbacks++;return []}});
+   Object.defineProperty(WebAssembly,"Module",{configurable:true,writable:true,
+    value:function ForgedModule(){callbacks++;throw Error("forged module")}});
+   // Both admissions are synchronous until the first filesystem await.
+   validPublication=publishAtomicRelease({output:w.output,wasm:previous.wasm,
+    manifest:previous.manifest,
+    provenance:{...previous.provenance,note:"native Wasm static admission invariance"}});
+   invalidPublication=publishAtomicRelease({output:w.output,wasm:invalid,
+    manifest:previous.manifest,provenance:previous.provenance});
+  }finally{
+   Object.defineProperty(WebAssembly,"validate",oldValidate);
+   Object.defineProperty(WebAssembly,"Module",oldModule);
+   Object.defineProperty(realModule,"imports",oldImports);
+  }
+  await assert.rejects(invalidPublication,/invalid executable Wasm/);
+  const published=await validPublication;
+  assert.equal(callbacks,0,"admission may not consult post-import Wasm globals");
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,published.releaseSha256);
+  assert.equal(execute((await readAtomicRelease(w.output)).wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("world-writable release root and pointer parent are never trusted publication namespaces",
+ {timeout:45000},async()=>{
+ const w=await workspace();
+ const root=w.output+".releases";
+ let baseline=null;
+ try{
+  baseline=await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const trusted=await readAtomicRelease(w.output);
+  const kwargs={output:w.output,wasm:trusted.wasm,
+   manifest:trusted.manifest,provenance:trusted.provenance};
+  const originalPointer=await readFile(w.output+".current.json");
+  try{
+   await chmod(root,0o777);
+   await assert.rejects(readAtomicRelease(w.output),/invalid release root/);
+   await assert.rejects(publishAtomicRelease(kwargs),
+    /release root symlink or unsafe permissions/);
+   assert.deepEqual(await readFile(w.output+".current.json"),originalPointer);
+  }finally{await chmod(root,0o700)}
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
+  try{
+   await chmod(w.dir,0o777);
+   await assert.rejects(readAtomicRelease(w.output),
+    /unsafe atomic pointer parent directory/);
+   await assert.rejects(publishAtomicRelease(kwargs),
+    /unsafe atomic pointer parent directory/);
+   assert.deepEqual(await readFile(w.output+".current.json"),originalPointer);
+  }finally{await chmod(w.dir,0o700)}
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,baseline.releaseSha256);
+ }finally{
+  // Restoration happens even on assertion failures.
+  await chmod(root,0o700).catch(()=>{});
+  await chmod(w.dir,0o700).catch(()=>{});
+  await cleanup(w.dir);
+ }
+});
+
+test("release digesting uses captured SHA-256 methods despite post-import poisoning",
+ {timeout:45000},async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const baseline=await readAtomicRelease(w.output);
+  const priorPointer=await readFile(w.output+".current.json");
+  const hashProto=Object.getPrototypeOf(createHash("sha256"));
+  const oldUpdate=Object.getOwnPropertyDescriptor(hashProto,"update");
+  const oldDigest=Object.getOwnPropertyDescriptor(hashProto,"digest");
+  let callbacks=0,publishing;
+  try{
+   Object.defineProperty(hashProto,"update",{configurable:true,writable:true,
+    value(){callbacks++;return this}});
+   Object.defineProperty(hashProto,"digest",{configurable:true,writable:true,
+    value(){callbacks++;return "f".repeat(64)}});
+   // Admission digests occur before the first async filesystem operation.
+   publishing=publishAtomicRelease({output:w.output,wasm:baseline.wasm,
+    manifest:baseline.manifest,provenance:{
+     ...baseline.provenance,note:"captured digest-method integrity"
+    }});
+  }finally{
+   Object.defineProperty(hashProto,"update",oldUpdate);
+   Object.defineProperty(hashProto,"digest",oldDigest);
+  }
+  const receipt=await publishing;
+  assert.equal(callbacks,0,"release hashing must never invoke poisoned Hash methods");
+  assert.notDeepEqual(await readFile(w.output+".current.json"),priorPointer);
+  const selected=await readAtomicRelease(w.output);
+  assert.equal(selected.releaseSha256,receipt.releaseSha256);
+  assert.equal(selected.provenance.note,"captured digest-method integrity");
+  assert.equal(execute(selected.wasm),42n);
+ }finally{await cleanup(w.dir)}
+});
+
+test("verified release reader ignores poisoned SHA-256 prototype methods",
+ {timeout:45000},async()=>{
+ const w=await workspace();
+ try{
+  await compileOresToWasm({...w,publication:"atomic",environment:"browser"});
+  const selected=await readAtomicRelease(w.output);
+  const moduleURL=new URL("../scripts/atomic-release.mjs",import.meta.url).href;
+  const childSource=[
+   "import {readAtomicRelease} from "+JSON.stringify(moduleURL)+";",
+   "import {createHash} from 'node:crypto';",
+   "const output="+JSON.stringify(w.output)+";",
+   "const hashProto=Object.getPrototypeOf(createHash('sha256'));",
+   "const originalUpdate=Object.getOwnPropertyDescriptor(hashProto,'update');",
+   "const originalDigest=Object.getOwnPropertyDescriptor(hashProto,'digest');",
+   "let calls=0,identity;",
+   "try{",
+   " Object.defineProperty(hashProto,'update',{configurable:true,writable:true,",
+   "  value(){calls++;return this}});",
+   " Object.defineProperty(hashProto,'digest',{configurable:true,writable:true,",
+   "  value(){calls++;return 'f'.repeat(64)}});",
+   " identity=(await readAtomicRelease(output)).releaseSha256;",
+   "}finally{",
+   " Object.defineProperty(hashProto,'update',originalUpdate);",
+   " Object.defineProperty(hashProto,'digest',originalDigest);",
+   "}",
+   "if(calls!==0)throw Error('poisoned SHA callbacks executed: '+calls);",
+   "process.stdout.write(identity+'\\n');"
+  ].join("\n");
+  const child=spawnSync(process.execPath,["--input-type=module","--eval",childSource],
+   {encoding:"utf8",timeout:30000});
+  assert.equal(child.status,0,"reader invoked poisoned hashing: "+String(child.stderr));
+  assert.equal(child.stdout.trim(),selected.releaseSha256);
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,selected.releaseSha256);
+ }finally{await cleanup(w.dir)}
 });
