@@ -27,31 +27,34 @@ jobs:
           set -euo pipefail
           read -r -a packages <<< "$(python3 scripts/verify-native-toolchain-lock.py install-args clang lld)"
           sudo apt-get update
-          # Pin to a deliberately small reviewed set of Ubuntu 24.04 GA-kernel
-          # builds. Ubuntu apt mirrors remove older versions; never silently
-          # admit an arbitrary latest/HWE kernel or reuse the host runner kernel.
-          available="$(apt-cache madison linux-image-virtual | awk -F '|' '{gsub(/^ +| +$/, "", $2); print $2}')"
-          kernel_package_version=""
+          # Preserve the reviewed GA-kernel allowlist while selecting actual
+          # signed image artifacts. Never float to latest, HWE or the host kernel.
+          kernel_package=''
+          kernel_package_version=''
           for candidate in 6.8.0-147.147 6.8.0-146.146 6.8.0-139.139; do
+            package="linux-image-${candidate%.*}-generic"
+            available="$(apt-cache madison "$package" | awk -F '|' '{gsub(/^ +| +$/, "", $2); print $2}')"
             if printf '%s\n' "$available" | grep -Fxq "$candidate"; then
+              kernel_package="$package"
               kernel_package_version="$candidate"
               break
             fi
           done
-          if [ -z "$kernel_package_version" ]; then
-            printf 'No reviewed QEMU guest-kernel pin available in apt:\n%s\n' "$available" >&2
+          if [ -z "$kernel_package" ]; then
+            echo "::error::No reviewed signed QEMU guest kernel available in apt" >&2
+            apt-cache policy linux-image-6.8.0-147-generic linux-image-6.8.0-146-generic linux-image-6.8.0-139-generic
             exit 1
           fi
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            "${packages[@]}" qemu-system-x86 busybox-static e2fsprogs \
-            "linux-image-virtual=$kernel_package_version"
+            "${packages[@]}" qemu-system-x86 busybox-static e2fsprogs initramfs-tools \
+            "$kernel_package=$kernel_package_version"
           python3 scripts/verify-native-toolchain-lock.py verify clang lld
-          test "$(dpkg-query -W -f='${Version}' linux-image-virtual)" = "$kernel_package_version"
-          # linux-image-virtual=6.8.0-N.N installs vmlinuz-6.8.0-N-generic.
+          test "$(dpkg-query -W -f='${Version}' "$kernel_package")" = "$kernel_package_version"
+          # A signed linux-image-6.8.0-N-generic package supplies the same ABI name.
           guest_kernel="${kernel_package_version%.*}-generic"
           test -s "/boot/vmlinuz-$guest_kernel"
           test -s "/boot/initrd.img-$guest_kernel"
-          echo "QEMU_KERNEL_APT_PACKAGE=linux-image-virtual=$kernel_package_version"
+          echo "QEMU_KERNEL_APT_PACKAGE=$kernel_package=$kernel_package_version"
           echo "QEMU_KERNEL_VERSION=$guest_kernel"
           # The initramfs is runner-built and not an immutable Ubuntu package.
           # Persist its exact name and hash for this checkout/run's evidence.
@@ -89,3 +92,4 @@ jobs:
           path: build/qemu-powercut-evidence.json
           if-no-files-found: warn
           retention-days: 30
+
