@@ -10,7 +10,30 @@ const typedSlot=name=>Function.prototype.call.bind(Object.getOwnPropertyDescript
 const dataSlot=name=>Function.prototype.call.bind(Object.getOwnPropertyDescriptor(DataView.prototype,name).get);
 const copyNative=Function.prototype.call.bind(Uint8Array.prototype.set);
 
-export function inspectWasmBytes(input,{maxModuleBytes=1048576,maxMemoryPages=32}={}){
+// Budget limits are trust-boundary inputs as well: destructuring a caller-owned
+// record executes accessors before module inspection. Read own native data only.
+function inspectOptions(options){
+ if(options===null || typeof options!=="object" || types.isProxy(options) ||
+    Array.isArray(options))throw new TypeError("invalid Wasm inspection options");
+ const proto=Object.getPrototypeOf(options);
+ if(proto!==Object.prototype && proto!==null)
+  throw new TypeError("invalid Wasm inspection options");
+ const keys=Reflect.ownKeys(options);
+ if(keys.some(key=>key!=="maxModuleBytes" && key!=="maxMemoryPages"))
+  throw new TypeError("invalid Wasm inspection options");
+ const own=(key,defaultValue)=>{
+  const descriptor=Object.getOwnPropertyDescriptor(options,key);
+  if(!descriptor)return defaultValue;
+  if(!Object.hasOwn(descriptor,"value") || !descriptor.enumerable)
+   throw new TypeError("invalid Wasm inspection options");
+  return descriptor.value===undefined?defaultValue:descriptor.value;
+ };
+ return {maxModuleBytes:own("maxModuleBytes",1048576),
+         maxMemoryPages:own("maxMemoryPages",32)};
+}
+
+export function inspectWasmBytes(input,options={}){
+ const {maxModuleBytes,maxMemoryPages}=inspectOptions(options);
  if(!Number.isSafeInteger(maxModuleBytes)||maxModuleBytes<8||maxModuleBytes>16*1024*1024)throw new TypeError("invalid maximum module size");
  if(!Number.isSafeInteger(maxMemoryPages)||maxMemoryPages<1||maxMemoryPages>256)throw new TypeError("invalid maximum memory pages");
  if(input instanceof WebAssembly.Module)throw new TypeError("precompiled WebAssembly.Module cannot be inspected: provide original bytes");
