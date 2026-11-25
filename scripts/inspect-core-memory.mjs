@@ -79,6 +79,30 @@ export function inspectWasmBytes(input,options={}){
   const length=u32(bytes.length);
   const end=at+length;
   if(end>bytes.length)fail("section extends beyond module");
+  if(id===2){
+   // Imported memory is not declared in section 5, and its host-provided
+   // allocation can exceed this loader's budget. Deny it before validation.
+   const count=u32(end);
+   if(count>1024)fail("import count exceeds inspection budget");
+   const skipName=()=>{
+    const size=u32(end);
+    if(size>end-at)fail("truncated import name");
+    at+=size;
+   };
+   for(let i=0;i<count;i++){
+    skipName();skipName();
+    if(at>=end)fail("truncated import kind");
+    const kind=bytes[at++];
+    if(kind===1||kind===2)fail("imported tables and memories are forbidden");
+    if(kind===0){ u32(end); }
+    else if(kind===3){
+     if(end-at<2)fail("truncated global import");
+     at+=2;
+    }else if(kind===4){ u32(end);u32(end); }
+    else fail("unsupported import kind");
+   }
+   if(at!==end)fail("malformed import section");
+  }
   if(id===8)fail("start section is forbidden (runs before host admission completes)");
   if(id===4)fail("table section is not yet admitted");
   if(id===5){
