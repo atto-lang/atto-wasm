@@ -102,7 +102,8 @@ async function withPublicationLock(published,publication,callback){
  if(!acquired)throw Error("artifact publication lock unavailable");
  try{
   // This second admission check is serialized across cooperating compilers.
-  await rejectMixedPublication(published,publication);
+  if(sourceSuffix!==".atto"&&sourceSuffix!==".ores") throw Error("source must have canonical .atto or legacy .ores extension");
+ await rejectMixedPublication(published,publication);
   return await callback();
  }finally{
   await rm(lock,{recursive:true,force:true});
@@ -131,7 +132,6 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  ]);
  const sourcePath=join(sourceParent,basename(source));
  const sourceSuffix=extname(sourcePath).toLowerCase();
- if(sourceSuffix!==".atto"&&sourceSuffix!==".ores") throw Error("source must have canonical .atto or legacy .ores extension");
  const published=join(outputParent,basename(output));
  const protectedInputs=new Set([sourcePath,compilerPath]);
  if(!["atomic","legacy"].includes(publication))throw Error("invalid artifact publication mode");
