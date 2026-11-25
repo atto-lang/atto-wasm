@@ -66,23 +66,6 @@ function contract(domain,alternatives){
  }
  return {byId,bySchema};
 }
-// Only bounded own enumerable data slots may enter a MessagePack payload.
-// Cross-realm arrays remain valid. Proxies can still invoke reflection traps;
-// external callers must enforce a separate trusted-data boundary.
-function ownPayloadSlots(input){
- if(!Array.isArray(input))fail("sequence required");
- const size=Object.getOwnPropertyDescriptor(input,"length")?.value;
- if(!Number.isSafeInteger(size)||size>ELEMENTS)fail("sequence length exceeded");
- if(Reflect.ownKeys(input).length!==size+1)fail("sequence requires own data slots");
- const slots=[];
- for(let i=0;i<size;i++){
-  const d=Object.getOwnPropertyDescriptor(input,String(i));
-  if(!d||!d.enumerable||!Object.hasOwn(d,"value"))fail("sequence requires own data slots");
-  slots.push(d.value);
- }
- return slots;
-}
-
 class Writer {
  constructor(){this.bytes=[];this.nodes=0;this.visiting=new Set();}
  u8(x){if(this.bytes.length>=MAX)fail("byte budget exceeded");this.bytes.push(x&255);}
@@ -100,12 +83,14 @@ class Writer {
   // TextEncoder silently replaces lone surrogates; canonical Java does not.
   if(/[\uD800-\uDFFF]/u.test(x.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/gu,"")))fail("unpaired surrogate");
   const b=text.encode(x),n=b.length;
-  if(n>MAX)fail("string too large");
-  if(n<=31)this.u8(0xa0+n);
-  else if(n<=255){this.u8(0xd9);this.uint(BigInt(n),1);}
-  else if(n<=65535){this.u8(0xda);this.uint(BigInt(n),2);}
-  else {this.u8(0xdb);this.uint(BigInt(n),4);}
-  this.put(b);
+   try{
+    if(n>MAX)fail("string too large");
+    if(n<=31)this.u8(0xa0+n);
+    else if(n<=255){this.u8(0xd9);this.uint(BigInt(n),1);}
+    else if(n<=65535){this.u8(0xda);this.uint(BigInt(n),2);}
+    else {this.u8(0xdb);this.uint(BigInt(n),4);}
+    this.put(b);
+   }finally{wipeBytes(b,0);}
  }
  int(n){
   if(typeof n!=="bigint"||n<-(1n<<63n)||n>(1n<<63n)-1n)fail("signed i64 BigInt required");
@@ -132,15 +117,28 @@ class Writer {
    }
    case "S":this.string(x);return;
   }
-  // Snapshot the caller-owned array before encoding; never execute getters.
-  const values=ownPayloadSlots(x);
+  if(!Array.isArray(x))fail("sequence required");
+  const count=Object.getOwnPropertyDescriptor(x,"length")?.value;
+  if(!Number.isSafeInteger(count)||count>ELEMENTS)fail("sequence required");
   const fixed=["T","FA","FL"].includes(shape.kind);
-  if(fixed&&values.length!==shape.children.length)fail("wrong fixed arity");
+  if(fixed&&count!==shape.children.length)fail("wrong fixed arity");
+  // All payload elements are DATA slots. Reading x[i] can execute a getter,
+  // change its contents during serialization or bypass typed admission.
+  if(Reflect.ownKeys(x).length!==count+1)
+   fail("payload sequence must contain only own data slots");
+  const elements=[];
+  for(let i=0;i<count;i++){
+   const slot=Object.getOwnPropertyDescriptor(x,String(i));
+   if(!slot?.enumerable || !Object.hasOwn(slot,"value"))
+    fail("payload sequence requires own data slots");
+   elements.push(slot.value);
+  }
   if(this.visiting.has(x))fail("cyclic message sequence");
   this.visiting.add(x);
   try{
-   this.arr(values.length);
-   for(let i=0;i<values.length;i++)this.value(fixed?shape.children[i]:shape.children[0],values[i],d+1);
+   this.arr(count);
+   for(let i=0;i<count;i++)
+    this.value(fixed?shape.children[i]:shape.children[0],elements[i],d+1);
   }finally{this.visiting.delete(x);}
  }
  finish(){return Uint8Array.from(this.bytes);}
@@ -223,6 +221,10 @@ const typedProto=Object.getPrototypeOf(Uint8Array.prototype);
 const typedSlot=k=>Object.getOwnPropertyDescriptor(typedProto,k).get;
 const dataSlot=k=>Object.getOwnPropertyDescriptor(DataView.prototype,k).get;
 const copyBytes=Function.prototype.call.bind(Uint8Array.prototype.set);
+// Wipe decoder-owned copies on every exit path without using a mutable
+// caller-provided method or depending on a monkey-patched prototype.
+const wipeBytes=Function.prototype.call.bind(Uint8Array.prototype.fill);
+const wipeArray=Function.prototype.call.bind(Array.prototype.fill);
 function snapshot(input){
  let backing,offset=0,length;
  try{
@@ -251,20 +253,32 @@ function snapshot(input){
 }
 function equal(a,b){return a.length===b.length&&a.every((x,i)=>x===b[i]);}
 function makeWire(schema,hash,payload){
- const w=new Writer();w.arr(4);w.int(2n);w.string(schema);w.u8(0xc4);w.u8(32);w.put(hash);w.put(payload);
- return w.finish();
+ const w=new Writer();
+ try{
+  w.arr(4);w.int(2n);w.string(schema);w.u8(0xc4);w.u8(32);w.put(hash);w.put(payload);
+  return w.finish();
+ }finally{wipeArray(w.bytes,0);}
 }
 
 /** Canonical MessagePack v2 collection envelope shared with Java/LLVM. */
 export async function encodeCollectionV2(schema,descriptor,payload){
  if(!printable(schema)||schema.length>256)fail("invalid collection schema");
- const shape=parseShape(descriptor),w=new Writer();w.value(shape,payload);
- const data=w.finish(),hash=await digest(descriptor);
- return makeWire(schema,hash,data);
+ const shape=parseShape(descriptor),w=new Writer();
+ let data;
+ try{
+  w.value(shape,payload);
+  data=w.finish();
+  const hash=await digest(descriptor);
+  return makeWire(schema,hash,data);
+ }finally{
+  wipeArray(w.bytes,0);
+  if(data)wipeBytes(data,0);
+ }
 }
 export async function decodeCollectionV2(schema,descriptor,input){
  if(!printable(schema)||schema.length>256)fail("invalid collection schema");
  const shape=parseShape(descriptor),bytes=snapshot(input);
+ try {
  if(bytes.length>MAX)fail("message byte budget exceeded");
  const r=new Reader(bytes);
  if(r.arr()!==4||r.int()!==2n)fail("unsupported envelope version/arity");
@@ -274,20 +288,40 @@ export async function decodeCollectionV2(schema,descriptor,input){
  if(!equal(received,expected))fail("shape digest mismatch");
  const value=r.value(shape);
  if(r.at!==bytes.length)fail("trailing message bytes");
- const w=new Writer();w.value(shape,value);
- if(!equal(bytes,makeWire(schema,expected,w.finish())))fail("noncanonical MessagePack encoding");
- return value;
+ const w=new Writer();
+  let packed,encoded;
+  try{
+   w.value(shape,value);
+   packed=w.finish();
+   encoded=makeWire(schema,expected,packed);
+   if(!equal(bytes,encoded))fail("noncanonical MessagePack encoding");
+  }finally{
+   wipeArray(w.bytes,0);
+   if(packed)wipeBytes(packed,0);
+   if(encoded)wipeBytes(encoded,0);
+  }
+  return value;
+ } finally { wipeBytes(bytes,0); }
 }
 
 export async function encodeActorMessage(domain,alternatives,variantId,payload){
  const {byId}=contract(domain,alternatives);
  const entry=byId.get(variantId);if(!entry)fail("undeclared message variant");
- const w=new Writer();w.value(entry.shape,payload);
- const data=w.finish();const hash=await digest(entry.descriptor);
- return makeWire(entry.schema,hash,data);
+ const w=new Writer();
+ let data;
+ try{
+  w.value(entry.shape,payload);
+  data=w.finish();
+  const hash=await digest(entry.descriptor);
+  return makeWire(entry.schema,hash,data);
+ }finally{
+  wipeArray(w.bytes,0);
+  if(data)wipeBytes(data,0);
+ }
 }
 export async function decodeActorMessage(domain,alternatives,input){
  const {bySchema}=contract(domain,alternatives),bytes=snapshot(input);
+ try {
  if(bytes.length>MAX)fail("message byte budget exceeded");
  // Parse only a detached snapshot; raw caller memory may change during hashing.
  const r=new Reader(bytes);
@@ -300,9 +334,19 @@ export async function decodeActorMessage(domain,alternatives,input){
  if(r.at!==bytes.length)fail("trailing message bytes");
  // A canonical frame has EXACTLY the bytes our encoder emits.
  // This rejects nonminimal MessagePack integer/array/string spellings.
- const canonical=new Writer();canonical.value(entry.shape,value);
- const encoded=makeWire(entry.schema,expected,canonical.finish());
- if(!equal(bytes,encoded))fail("noncanonical MessagePack encoding");
- return Object.freeze({variantId:entry.id,value});
+ const canonical=new Writer();
+  let packed,encoded;
+  try{
+   canonical.value(entry.shape,value);
+   packed=canonical.finish();
+   encoded=makeWire(entry.schema,expected,packed);
+   if(!equal(bytes,encoded))fail("noncanonical MessagePack encoding");
+  }finally{
+   wipeArray(canonical.bytes,0);
+   if(packed)wipeBytes(packed,0);
+   if(encoded)wipeBytes(encoded,0);
+  }
+  return Object.freeze({variantId:entry.id,value});
+ } finally { wipeBytes(bytes,0); }
 }
 export const MESSAGEPACK_ACTOR_V2=Object.freeze({version:2,maxBytes:MAX,maxNodes:NODES,maxDepth:DEPTH,canonical:true});
