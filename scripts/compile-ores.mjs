@@ -19,18 +19,28 @@ const MAX_SOURCE_BYTES=1024*1024,MAX_COMPILER_BYTES=256*1024*1024,MAX_WASM_BYTES
 // A preflight stat(path) is not an admission guard against an attacker
 // replacing that pathname with a FIFO or growing file before readFile(path).
 // Use one nonblocking, nofollow descriptor for both fstat and bounded reads.
-async function readBounded(path,limit,label){
+// Read a single immutable descriptor snapshot. Caller pathnames can be
+// replaced between preflight and open, and regular files can be rewritten or
+// grown during a read; neither case may be certified by the bridge.
+export async function readBounded(path,limit,label,expectedIdentity=undefined){
+ if(!Number.isSafeInteger(limit)||limit<1)throw new TypeError("invalid bounded file read limit");
+ if(!Number.isInteger(fsConstants.O_NOFOLLOW)||!Number.isInteger(fsConstants.O_NONBLOCK))
+  throw Error("bounded no-follow file reads unsupported on this host");
  const limitError=label==="source"?"source exceeds 1 MiB compiler bridge budget":
   label==="compiler"?"compiler exceeds 256 MiB executable budget":
   label==="linked Wasm"?"linked Wasm exceeds 16 MiB artifact budget":
   label+" exceeds configured byte budget";
- const nofollow=fsConstants.O_NOFOLLOW||0;
- const fd=await open(path,fsConstants.O_RDONLY|fsConstants.O_NONBLOCK|nofollow);
+ const fd=await open(path,fsConstants.O_RDONLY|fsConstants.O_NONBLOCK|fsConstants.O_NOFOLLOW);
  try{
-  const st=await fd.stat();
-  if(!st.isFile())throw Error(label+" is not a regular file");
-  if(st.size===0)throw Error(label+" is empty");
-  if(st.size>limit)throw Error(limitError);
+  const before=await fd.stat({bigint:true});
+  if(!before.isFile())throw Error(label+" is not a regular file");
+  if(before.size===0n)throw Error(label+" is empty");
+  if(before.size>BigInt(limit))throw Error(limitError);
+  if(expectedIdentity!==undefined && (
+     before.dev!==BigInt(expectedIdentity.dev) ||
+     before.ino!==BigInt(expectedIdentity.ino) ||
+     before.size!==BigInt(expectedIdentity.size)))
+   throw Error(label+" input changed between preflight and bounded snapshot");
   const chunks=[];let total=0;
   for(;;){
    const buf=Buffer.allocUnsafe(Math.min(65536,limit-total+1));
@@ -40,7 +50,11 @@ async function readBounded(path,limit,label){
    if(total>limit)throw Error(limitError);
    chunks.push(buf.subarray(0,bytesRead));
   }
-  if(total===0)throw Error(label+" is empty");
+  const after=await fd.stat({bigint:true});
+  if(!after.isFile()||before.dev!==after.dev||before.ino!==after.ino||
+     before.size!==after.size||before.mtimeNs!==after.mtimeNs||
+     before.ctimeNs!==after.ctimeNs||BigInt(total)!==before.size)
+   throw Error(label+" input changed during bounded snapshot");
   return Buffer.concat(chunks,total);
  }finally{await fd.close()}
 }
@@ -109,14 +123,15 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  // A lexical resolve() comparison alone can overwrite compiler/source
  // inputs through an alternate symlinked parent directory.
  await mkdir(dirname(output),{recursive:true});
- const [sourcePath,compilerPath,outputParent]=await Promise.all([
-  realpath(source),realpath(compiler),realpath(dirname(output))
+ // Canonicalize directory aliases, but preserve the caller's source leaf.
+ // Resolving realpath(source) would follow and conceal an untrusted symlink
+ // before readBounded can enforce O_NOFOLLOW on its opened descriptor.
+ const [sourceParent,compilerPath,outputParent]=await Promise.all([
+  realpath(dirname(source)),realpath(compiler),realpath(dirname(output))
  ]);
- // A source with a nonlanguage extension must not be silently relabeled
- // .ores, and .ATTO/.ORES must retain their recognized language identity.
+ const sourcePath=join(sourceParent,basename(source));
  const sourceSuffix=extname(sourcePath).toLowerCase();
- if(sourceSuffix!==".atto"&&sourceSuffix!==".ores")
-  throw Error("source must have canonical .atto or legacy .ores extension");
+ if(sourceSuffix!==".atto"&&sourceSuffix!==".ores") throw Error("source must have canonical .atto or legacy .ores extension");
  const published=join(outputParent,basename(output));
  const protectedInputs=new Set([sourcePath,compilerPath]);
  if(!["atomic","legacy"].includes(publication))throw Error("invalid artifact publication mode");
@@ -145,8 +160,8 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
  }
  await rejectMixedPublication(published,publication);
  const [sourceBytes,compilerBytes]=await Promise.all([
-  readBounded(sourcePath,MAX_SOURCE_BYTES,"source"),
-  readBounded(compilerPath,MAX_COMPILER_BYTES,"compiler")
+  readBounded(sourcePath,MAX_SOURCE_BYTES,"source",sourceStat),
+  readBounded(compilerPath,MAX_COMPILER_BYTES,"compiler",compilerStat)
  ]);
  if(sourceBytes.length>MAX_SOURCE_BYTES)throw Error("source exceeds 1 MiB compiler bridge budget");
  // Imports cannot be resolved against the single-file scalar source snapshot.
