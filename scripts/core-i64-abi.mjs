@@ -11,6 +11,10 @@ export function assertCoreI64Entry(bytes,entry) {
       if(at>=end)throw Error("truncated Wasm ABI field");
       const b=bytes[at++];
       if(i===4&&(b&0xf0))throw Error("invalid Wasm ABI integer");
+      // A multibyte varuint32 must terminate with a nonzero final group.
+      // Otherwise padded LEB128 aliases can hide noncanonical ABI metadata.
+      if(i>0 && (b&128)===0 && (b&127)===0)
+        throw Error("noncanonical Wasm ABI integer");
       value+=(b&127)*2**(7*i);
       if(!(b&128))return value;
     }
