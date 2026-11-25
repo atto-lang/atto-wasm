@@ -14,7 +14,8 @@ test('encoded actor payload keeps the admitted value after caller mutation', asy
   const received = await decodeActorMessage(domain,variants,wire);
   assert.equal(received.variantId,7);
   assert.deepEqual(received.value,[true,'initial']);
-  received.value[1] = 'consumer-mutation';
+  assert.ok(Object.isFrozen(received.value));
+  assert.throws(() => { received.value[1] = 'consumer-mutation'; }, TypeError);
   assert.deepEqual((await decodeActorMessage(domain,variants,wire)).value,[true,'initial']);
 });
 

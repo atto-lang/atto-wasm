@@ -1,69 +1,50 @@
-# Oreslang Wasm execution infrastructure
+> **AI agent instructions (organization-wide):** Before working on code, issues, or pull requests, read and follow the [organization `AGENTS.md`](https://github.com/atto-lang/.github/blob/main/AGENTS.md), including its **merge-first stealth-development policy**. Honor any repository-local `AGENTS.md`, explicit holds, and GitHub-enforced rules.
 
-**Current status:** runnable WebAssembly **runtime ABI prototype** implemented in freestanding C, with Node/WebAssembly smoke tests. No Oreslang guest source-to-Wasm compilation is claimed.
+# atto-wasm
 
-## Goals
-- Feed verified Oreslang MIR into the existing LLVM backend and produce real wasm32 objects/modules.
-- Version core Wasm ABI and WIT/component interfaces, keeping them distinct.
-- Host capabilities always checked by compiler, linker/import validation, and runtime.
-- Preserve actor ownership and async contracts when portable lowering is implemented.
+WebAssembly integration, components, and interoperability utilities for AttoLang.
 
-## Run the working prototype
+## Naming migration and language authority
 
-~~~sh
-npm test
-# or build only:
-npm run build
-~~~
+This repository is maintained at [atto-lang/atto-wasm](https://github.com/atto-lang/atto-wasm); use `https://github.com/atto-lang/atto-wasm.git` for Git remotes and canonical `.atto` source examples. The normative language contract is [atto-spec](https://github.com/atto-lang/atto-spec), with executable guest evidence tracked by [atto-platform-conformance](https://github.com/atto-lang/atto-platform-conformance). Follow current ownership, borrowing, effects, actor, and syntax rules there; do not infer implemented features from a README or unexecuted CI.
 
-Prerequisites: Node 22+, Clang with wasm32 target, wasm-ld. The build uses freestanding no-libc Clang, exports a 32-bit memory and functions described in docs/ABI.md. The example module contains a bounded **single-threaded FIFO** (8 messages), elementary math, and a clock host import behind a capability mask. It is intentionally NOT an Oreslang scheduler, GC, async runtime or security sandbox.
+## Scope
 
-Output: build/oreslang_rt.wasm (generated, not checked in). The tests instantiate the binary and prove positive/negative cap behavior. A build/test failure is actionable; CI does not silently fall back to fake Wasm.
+Wasm ABI integration, host interoperability, module packaging, and portability tests.
 
-## Next implementation slices
-1. Formal IR-to-LLVM wasm32 lowering in oreslang-source.llvm.
-2. Oreslang call frame, ownership transfer, borrow-safe linear-memory ABI, async state machines.
-3. WIT binding/componentization with separately pinned WASI 0.2 and 0.3 host profiles.
-4. Real browser and edge conformance runs from oreslang-platform-conformance.
-5. Runtime max-memory, table limits, fuel/interrupt policies at the real host boundary.
+## Compatibility and design
 
-The WIT file in this repo is a **future component interface**. The core Wasm prototype does not yet implement the component model. Keep runtime ABI and host environment separate from admission rules at oreslang-target-profiles.
+This package is intended to integrate with [AttoLang](https://github.com/atto-lang) while clearly separating portable language behavior from backend- and host-specific features. Document APIs, target restrictions, and security/trust boundaries.
 
-See https://ores-truffle-oreslang.github.io/logs/2/
+## Development and verification
 
+Refer to checked-in sources and CI workflows for verified build and test commands. Include platform-specific execution tests and publish exact-commit evidence before asserting backend parity or production readiness.
 
-## Experimental source-to-Wasm bridge (new)
+## Project status
 
-The initial native LLVM compiler supports a small integer-function subset. With an **actual, caller-supplied** compiled native `oreslang-llvmc` binary, the following pipeline is now available:
+This README describes the intended repository scope and does not imply implemented functionality or verified target coverage.
 
-~~~sh
-# Build / obtain the native compiler in oreslang-source.llvm first.
-node scripts/compile-ores.mjs \
-  --compiler=/absolute/path/to/oreslang-llvmc \
-  --source="$(pwd)/examples/native-int.ores" \
-  --output="$(pwd)/build/real-oreslang-guest.wasm"
+## Related
 
-# Real integration check; fails rather than simulates if your compiler is absent:
-ORESLANG_LLVM_COMPILER=/absolute/path/to/oreslang-llvmc npm test
-~~~
+- [Language specification](https://github.com/atto-lang/atto-spec)
+- [Platform conformance](https://github.com/atto-lang/atto-platform-conformance)
 
-Canonical AttoLang `.atto` inputs retain that suffix in the staged, hashed
-compiler input; legacy `.ores` inputs retain their prior behavior. The bridge
-still validates source bytes and compiler identity independently. Its dedicated
-suffix regression runs a **stub compiler** through real Clang/Wasm linking and
-is not proof of a modern `.atto` guest compiler or backend parity.
+## Repository ownership and contribution routing
 
-The script runs the native compiler on the exact source, feeds its LLVM IR into Clang's wasm32 target, requires a requested i64 export, validates the resulting module, rejects **all** host imports for this initial pure-integer slice, and records source / compiler executable / IR / Wasm SHA-256 values in a provenance sidecar. Generated modules are staged in a scratch directory until verification succeeds.
+**Belongs here:** Reusable Wasm module/component integration, WIT/ABI adapters, host/guest interop and compatible packaging utilities.
 
-`tests/bridge.test.mjs` has a clearly labeled stub-compiler test validating the linker plumbing. It must **never** be counted as Oreslang compiler parity. The separate optional native-compiler integration test runs only with `ORESLANG_LLVM_COMPILER`; the standard CI suite reports it skipped. This does not provide actor/channel/async or ownership feature parity, environment admission, component/WASI APIs, or full source-to-Wasm lowering. The user-supplied compiler path must be trusted; source repository revision is not cryptographically derived from binary hashes.
+**Belongs elsewhere:** Wasm compiler backend/lowering belongs in atto-source.wasm; Rust compiler-to-Wasm in atto-source.rs; deployment in atto-playground.
 
-## Repository ownership and migration (2026-11-08)
+**Security and portability boundary:** Separate browsers' WebAssembly APIs from native Wasmtime hosts; verify import signatures, linear-memory bounds, capability admission and target-specific negative tests.
 
-**Present home:** `ores-truffle-oreslang/oreslang-wasm` in the legacy Oreslang organization; the public language name is **AttoLang**. Preserve existing `oreslang-*` project, package and command names and `.ores` fixtures until explicitly verified migration steps are approved.
+AttoLang is the canonical project name; new source, examples and documentation use `.atto` and the `atto-lang` repository organization. This README defines scope, not feature readiness.
 
-- **Belongs here:** Wasm ABI, guest runtime integration and execution-host experiments.
-- **Does not belong here:** Assuming every Wasm target has identical Wasmtime, browser or actor capabilities. Shared language semantics and portable core/std should be implemented as canonical `.atto` code rather than copied into per-host adapters.
-- **Organization separation:** [atto-lang](https://github.com/atto-lang) governs language/compiler/runtime/tooling/conformance and portable ecosystem code. [atto-co](https://github.com/atto-co) governs commercial cloud deployments, billing, identity, tenancy and hosted services. A similarly named pre-existing `atto-*` repository is not proof of an executed Git transfer or parity.
-- **Proposed migration:** this legacy repository may first transfer to `atto-lang/oreslang-wasm` under its **existing name and stable GitHub repository ID**. No direct `atto-co` move is currently authorized; product carve-outs require a later independent plan.
+**Acceptance:** name exact source SHA/tree, runtime/toolchain, positive and negative checks and execution receipt before claiming support. Host-only tests and empty CI steps do not prove guest execution.
 
-**Transfer gate:** claim coordination in [legacy issue #26](https://github.com/ores-truffle-oreslang/.github/issues/26) and use [review-only transfer runbook #25](https://github.com/ores-truffle-oreslang/.github/pull/25). Record exact head SHA/tree and ID, independent security and source/target admin approval, destination rules/visibility, PRs, Actions, app credentials, packages, releases, webhooks, Pages, dependents and rollback owner. Do **not** mirror private sources or overwrite existing `atto-*` repos. Recheck unchanged ID/tree and controls after real GitHub ownership transfer; execute exact-head CI at destination. `steps=[]` or `steps=null` is `NOT_EXECUTED`; host-only or source-free tests do not prove compiled AttoLang guest features. Do not mix repository transfers with forced syntax renames or AOT/zero-GC claims.
+## Legacy provenance and transfer verification
+
+The historical predecessor was `ores-truffle-oreslang/oreslang-wasm`. The present checkout is `atto-lang/atto-wasm`; matching names or imported history do not prove preserved numeric repository identity or runtime parity. Preserve working legacy `.ores` inputs and historical package/CLI aliases until compiler-backed replacements and consumers are verified. New source follows canonical `.atto` contracts.
+
+Wasm ABI and host interoperability belong here; target-specific compiler lowering and hosted deployments belong elsewhere. Do not assume identical capabilities across Wasmtime and browser hosts. [atto-lang](https://github.com/atto-lang) maintains language, portable libraries and tooling; [atto-co](https://github.com/atto-co) separately governs commercial deployment, tenancy, identity and billing. Further original-ID transfers or commercial carve-outs require separate owner authorization and independent security review. This document authorizes no transfer or private-source mirror.
+
+Before an authorized transfer, coordinate in [migration issue #26](https://github.com/ores-truffle-oreslang/.github/issues/26) and review the authorized runbook. Record source and target administrators, numeric repository ID, exact SHA/tree, history, visibility, access and rulesets, PRs/issues, releases, packages, consumers, CI/runners, secrets, deploy keys, apps, webhooks, Pages and rollback ownership. Verify unchanged ID/history/tree and restored controls after transfer, then execute exact-head tests before changing consumers. Zero-step jobs are NOT_EXECUTED; host-only and source-free checks do not certify compiled guest execution or production capabilities.
