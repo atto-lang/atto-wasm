@@ -289,7 +289,7 @@ test("guest message descriptors must be own data, never executable getters",asyn
   pair:["hi",1n],fixed:[true,false],items,
   state:{variant:"None",value:null},blob:Uint8Array.of(1)
  }};
- await assert.rejects(encodeMessage(contract,batch),/sparse array\/list element/);
+ await assert.rejects(encodeMessage(contract,batch),/invalid array\/list element element/);
  assert.equal(calls,0,"list item getter must not execute");
 });
 
