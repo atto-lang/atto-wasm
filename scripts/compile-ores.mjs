@@ -102,8 +102,7 @@ async function withPublicationLock(published,publication,callback){
  if(!acquired)throw Error("artifact publication lock unavailable");
  try{
   // This second admission check is serialized across cooperating compilers.
-  if(sourceSuffix!==".atto"&&sourceSuffix!==".ores") throw Error("source must have canonical .atto or legacy .ores extension");
- await rejectMixedPublication(published,publication);
+  await rejectMixedPublication(published,publication);
   return await callback();
  }finally{
   await rm(lock,{recursive:true,force:true});
@@ -158,6 +157,7 @@ export async function compileOresToWasm({compiler,source,output,exportName="main
     throw Error("output or artifact metadata path overlaps a compiler/source input");
   }catch(error){if(error?.code!=="ENOENT")throw error}
  }
+ if(sourceSuffix!==".atto"&&sourceSuffix!==".ores") throw Error("source must have canonical .atto or legacy .ores extension");
  await rejectMixedPublication(published,publication);
  const [sourceBytes,compilerBytes]=await Promise.all([
   readBounded(sourcePath,MAX_SOURCE_BYTES,"source",sourceStat),
