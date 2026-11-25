@@ -30,7 +30,7 @@ test('sparse/accessor tuple elements and wrong scalar types are never serialized
  await assert.rejects(encodeMessage(schema(),sparse),/sparse tuple value/);
  const accessor=message();let calls=0;
  Object.defineProperty(accessor.fields.pair,'0',{get(){calls++;throw Error('getter called')}});
- await assert.rejects(encodeMessage(schema(),accessor),/sparse tuple value/);
+ await assert.rejects(encodeMessage(schema(),accessor),/invalid tuple value element/);
  assert.equal(calls,0);
  const wrong=message();wrong.fields.pair=[7,true];
  await assert.rejects(encodeMessage(schema(),wrong),/signed i64 BigInt required/);

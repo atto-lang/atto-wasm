@@ -11,11 +11,44 @@ const SCHEMA_NODES=4096, SCHEMA_BYTES=65536;
 const magic=Uint8Array.of(79,82,77,49);
 const enc=new TextEncoder(),dec=new TextDecoder("utf-8",{fatal:true});
 const prim=new Set(["string","i64","bool","bytes"]);
+// Read the real backing storage through native brand-checked accessors.
+// Subclass overrides of .buffer, .length or Symbol.iterator must not choose
+// the bytes that are charged to a budget, hashed, or delivered to a guest.
+const typedProto=Object.getPrototypeOf(Uint8Array.prototype);
+const typedBuffer=Object.getOwnPropertyDescriptor(typedProto,"buffer").get;
+const typedOffset=Object.getOwnPropertyDescriptor(typedProto,"byteOffset").get;
+const typedLength=Object.getOwnPropertyDescriptor(typedProto,"byteLength").get;
+const viewBuffer=Object.getOwnPropertyDescriptor(DataView.prototype,"buffer").get;
+const viewOffset=Object.getOwnPropertyDescriptor(DataView.prototype,"byteOffset").get;
+const viewLength=Object.getOwnPropertyDescriptor(DataView.prototype,"byteLength").get;
+const arrayBufferLength=Object.getOwnPropertyDescriptor(ArrayBuffer.prototype,"byteLength").get;
+function checkedView(b){
+ let buffer,offset,length;
+ // A Proxy can trap instanceof/getPrototypeOf. First apply the native
+ // internal-slot getter, which rejects proxies without consulting traps.
+ try{
+  buffer=typedBuffer.call(b);offset=typedOffset.call(b);
+  length=typedLength.call(b);
+ }catch{fail("invalid byte view");}
+ if(!(b instanceof Uint8Array))fail("expected Uint8Array");
+ if(typeof SharedArrayBuffer!=="undefined"&&buffer instanceof SharedArrayBuffer)
+  fail("shared memory not admitted");
+ return new Uint8Array(buffer,offset,length);
+}
 const plain=x=>x!==null&&typeof x==="object"&&[Object.prototype,null].includes(Object.getPrototypeOf(x));
 const fail=reason=>{throw new TypeError("Oreslang envelope: "+reason)};
 function shape(x,keys,name){
- if(!plain(x)||Reflect.ownKeys(x).some(k=>typeof k!=="string"||!keys.includes(k)))
-  fail("invalid "+name+" shape");
+ if(!plain(x))fail("invalid "+name+" shape");
+ // Validate descriptors before reading ANY data. A getter could otherwise
+ // authorize one schema while the later hash/serializer observes another.
+ // Reflect.ownKeys also catches hidden and symbol-bearing properties.
+ for(const key of Reflect.ownKeys(x)){
+  if(typeof key!=="string"||!keys.includes(key))
+   fail("invalid "+name+" shape");
+  const descriptor=Object.getOwnPropertyDescriptor(x,key);
+  if(!descriptor||!descriptor.enumerable||!Object.hasOwn(descriptor,"value"))
+   fail("invalid "+name+" shape");
+ }
 }
 // Every key hashed into the ABI must be an own enumerable data property.
 // Otherwise Object.prototype pollution or accessors can inject authority.
@@ -28,10 +61,20 @@ function requiredShape(x,keys,name){
     }))fail("invalid "+name+" shape");
 }
 function dense(items,name){
- if(!Array.isArray(items))fail("invalid "+name);
- for(let i=0;i<items.length;i++)
-  if(!Object.hasOwn(Object.getOwnPropertyDescriptor(items,String(i))??{},"value"))
-   fail("sparse "+name);
+ if(!Array.isArray(items)||![Array.prototype,null].includes(Object.getPrototypeOf(items)))
+  fail("invalid "+name);
+ // A numeric getter, custom non-index attribute, or symbol key must never
+ // change the normalized hash or bypass a zero-byte element accounting visit.
+ // Preserve the specific sparse-index failure before enforcing closed
+ // array shape; missing holes and added hidden attributes are independent.
+ for(let i=0;i<items.length;i++){
+  const descriptor=Object.getOwnPropertyDescriptor(items,String(i));
+  if(!descriptor)fail("sparse "+name);
+  if(!descriptor.enumerable||!Object.hasOwn(descriptor,"value"))
+   fail("invalid "+name+" element");
+ }
+ if(Reflect.ownKeys(items).length!==items.length+1)
+  fail("invalid "+name+" shape");
 }
 function unique(a,label){if(new Set(a).size!==a.length)fail("duplicate "+label);}
 function name(x){if(typeof x!=="string"||!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(x))fail("invalid name");return x;}
@@ -89,22 +132,32 @@ async function digest(c){
  return new Uint8Array(await crypto.subtle.digest("SHA-256",
   enc.encode("Oreslang owned-message contract v1\n"+JSON.stringify(c))));
 }
-function stringBytes(s){
+function stringBytes(s,remaining){
  if(typeof s!=="string")fail("expected string");
+ // Preflight the exact UTF-8 byte length before TextEncoder allocates. A
+ // hostile multi-megabyte string must not bypass a small envelope byte budget.
+ let bytes=0;
  for(let i=0;i<s.length;i++){
   const n=s.charCodeAt(i);
   if(n>=0xd800&&n<=0xdbff){
    if(++i>=s.length||s.charCodeAt(i)<0xdc00||s.charCodeAt(i)>0xdfff)fail("unpaired surrogate");
+   bytes+=4;
   }else if(n>=0xdc00&&n<=0xdfff)fail("unpaired surrogate");
+  else bytes+=n<0x80?1:n<0x800?2:3;
+  if(bytes>remaining)fail("byte budget exceeded");
  }
  return enc.encode(s);
 }
 class Writer{
  constructor(limit){this.parts=[];this.size=0;this.limit=limit;this.visits=0;}
  visit(){if(++this.visits>ITEMS)fail("value node budget exceeded");}
- put(b){if(!(b instanceof Uint8Array)||b.length>this.limit-this.size)fail("byte budget exceeded");
-  if(typeof SharedArrayBuffer!=="undefined"&&b.buffer instanceof SharedArrayBuffer)fail("shared memory not admitted");
-  this.parts.push(Uint8Array.from(b));this.size+=b.length;}
+ put(b){
+  const view=checkedView(b);
+  if(view.byteLength>this.limit-this.size)fail("byte budget exceeded");
+  const copy=new Uint8Array(view.byteLength);
+  Uint8Array.prototype.set.call(copy,view);
+  this.parts.push(copy);this.size+=copy.byteLength;
+ }
  u8(n){this.put(Uint8Array.of(n));}
  u16(n){const b=new Uint8Array(2);new DataView(b.buffer).setUint16(0,n,true);this.put(b);}
  u32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,true);this.put(b);}
@@ -128,9 +181,9 @@ function encode(w,t,x,d=0){
  if(t==="i64")return w.i64(x);
  if(t==="bool"){if(typeof x!=="boolean")fail("expected bool");return w.u8(x?1:0);}
  if(t==="string"||t==="bytes"){
-  const b=t==="string"?stringBytes(x):x;
-  if(!(b instanceof Uint8Array))fail("expected Uint8Array");
-  w.u32(b.length);return w.put(b);
+  const b=t==="string"?stringBytes(x,w.limit-w.size-4):x;
+  const view=checkedView(b);
+  w.u32(view.byteLength);return w.put(view);
  }
  if(Object.hasOwn(t,"tuple")){
   if(!Array.isArray(x)||x.length!==t.tuple.length)fail("tuple arity mismatch");
@@ -140,15 +193,9 @@ function encode(w,t,x,d=0){
  if(Object.hasOwn(t,"array")||Object.hasOwn(t,"list")){
   const fixed=Object.hasOwn(t,"array"),spec=fixed?t.array:t.list;
   if(!Array.isArray(x)||(fixed?x.length!==spec.length:x.length>spec.maxLength))fail("array/list length");
+  dense(x,"array/list element");
   if(!fixed)w.u32(x.length);
-  // Array.forEach skips sparse holes. With a zero-byte element type this
-  // would silently encode fewer values than the declared length, defeating
-  // node budgets and canonical typed-message round trips.
-  for(let i=0;i<x.length;i++){
-   const descriptor=Object.getOwnPropertyDescriptor(x,String(i));
-   if(!descriptor||!Object.hasOwn(descriptor,"value"))fail("sparse array/list element");
-   encode(w,spec.element,descriptor.value,d+1);
-  }
+  for(let i=0;i<x.length;i++)encode(w,spec.element,x[i],d+1);
   return;
  }
  requiredShape(x,["variant","value"],"enum value");
@@ -174,13 +221,32 @@ function decode(r,t,d=0){
  const variantId=r.u16();const v=t.enum.find(a=>a.id===variantId);if(!v)fail("unknown enum ID");
  return Object.freeze({variant:v.name,value:v.payload===null?null:decode(r,v.payload,d+1)});
 }
-function snapshot(input){
- if(input instanceof ArrayBuffer)return Uint8Array.from(new Uint8Array(input));
+function snapshot(input,maxBytes){
+ let buffer,offset=0,length;
  if(ArrayBuffer.isView(input)){
-  if(typeof SharedArrayBuffer!=="undefined"&&input.buffer instanceof SharedArrayBuffer)fail("shared memory not admitted");
-  return Uint8Array.from(new Uint8Array(input.buffer,input.byteOffset,input.byteLength));
+  try{
+   if(input instanceof DataView){
+    buffer=viewBuffer.call(input);offset=viewOffset.call(input);
+    length=viewLength.call(input);
+   }else{
+    buffer=typedBuffer.call(input);offset=typedOffset.call(input);
+    length=typedLength.call(input);
+   }
+  }catch{fail("invalid message view");}
+ }else{
+  // Likewise, native buffer-brand admission rejects spoofed ArrayBuffers.
+  try{length=arrayBufferLength.call(input);buffer=input;}
+  catch{fail("expected message bytes");}
  }
- fail("expected message bytes");
+ if(typeof SharedArrayBuffer!=="undefined"&&buffer instanceof SharedArrayBuffer)
+  fail("shared memory not admitted");
+ // Reject before creating an owned copy, otherwise a huge untrusted view
+ // can force an unbounded allocation ahead of the 1 MiB message budget.
+ if(length<HEADER||length>maxBytes)fail("invalid message size");
+ const src=new Uint8Array(buffer,offset,length);
+ const result=new Uint8Array(src.byteLength);
+ Uint8Array.prototype.set.call(result,src);
+ return result;
 }
 function budget(n){if(!Number.isSafeInteger(n)||n<HEADER||n>LIMIT)fail("invalid maxBytes");}
 export async function encodeMessage(schema,message,{maxBytes=LIMIT}={}){
@@ -197,8 +263,7 @@ export async function encodeMessage(schema,message,{maxBytes=LIMIT}={}){
  dv.setUint32(8,payload.length,true);result.set(hash,12);result.set(payload,HEADER);return result;
 }
 export async function decodeMessage(schema,input,{maxBytes=LIMIT}={}){
- budget(maxBytes);const c=contract(schema),bytes=snapshot(input);
- if(bytes.length<HEADER||bytes.length>maxBytes)fail("invalid message size");
+ budget(maxBytes);const c=contract(schema),bytes=snapshot(input,maxBytes);
  const r=new Reader(bytes);for(const m of magic)if(r.u8()!==m)fail("bad magic");
  if(r.u8()!==1||r.u8()!==0)fail("unknown version/flags");
  const variantId=r.u16(),n=r.u32(),received=r.take(32);
