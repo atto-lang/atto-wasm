@@ -49,3 +49,60 @@ test("reject NUL and oversized sources before compiler invocation", () => {
   assert.throws(() => check(new Uint8Array(1024*1024+1)), /1 MiB/);
   assert.throws(() => check("import"), /must be bytes/);
 });
+
+for (const boundary of ["\u0085", "\u2028", "\u2029"]) {
+  test("Unicode line-separator import cannot hide in line comment U+" + boundary.charCodeAt(0).toString(16), () => {
+    assert.throws(() => check(bytes('// hidden ' + boundary + 'import fnc x from "+/secret";')),
+      /verified native import graph/);
+    assert.doesNotThrow(() => check(bytes('// import ignored ' + boundary + 'fnc main():int{return 42;}')));
+  });
+}
+
+test("block comment nesting is bounded before native scalar import scanning",()=>{
+  assert.doesNotThrow(()=>check(bytes("/*".repeat(128)+"*/".repeat(128)+"fnc main():int{return 42;}")));
+  assert.throws(()=>check(bytes("/*".repeat(129)+"*/".repeat(129))),/block comment nesting exceeded/);
+  assert.throws(()=>check(bytes("/*".repeat(129)+"import fnc x from \"+/private\";"+ "*/".repeat(129))),/block comment nesting exceeded/);
+});
+
+test("shared mutable source cannot pass scalar import preflight",()=>{
+  if(typeof SharedArrayBuffer !== "function")return;
+  const source=new Uint8Array(new SharedArrayBuffer(128));
+  assert.throws(()=>check(source),/cannot use shared memory/);
+  // A forged .buffer property must not hide actual SharedArrayBuffer backing.
+  Object.defineProperty(source,"buffer",{value:new ArrayBuffer(128)});
+  assert.throws(()=>check(source),/cannot use shared memory/);
+  assert.doesNotThrow(()=>check(bytes("fnc main():int{return 42;}")));
+  assert.throws(()=>check(bytes('import fnc x from "+/private";')),
+    /verified native import graph/);
+});
+
+test("spoofed byteLength cannot bypass preflight byte budget",()=>{
+  const source=new Uint8Array(1024*1024+1);
+  Object.defineProperty(source,"byteLength",{get(){return 1;}});
+  assert.throws(()=>check(source),/1 MiB/);
+});
+
+test("UTF-8 BOM and embedded U+FEFF cannot conceal native imports",()=>{
+  const sourceForms=[
+    "\uFEFFimport fnc x from \"+/private\";",
+    "/* safe */\uFEFFimport fnc x from \"pkg:private\";",
+    "// safe\r\uFEFFimport fnc x from \"+/private\";",
+    "\uFEFF// comment\nimport fnc x from \"+/private\";"
+  ];
+  for(const source of sourceForms)
+    assert.throws(()=>check(bytes(source)),/verified native import graph/,JSON.stringify(source));
+  assert.doesNotThrow(()=>check(bytes("\uFEFFfnc main():int{return 42;}")));
+  assert.doesNotThrow(()=>check(bytes("/* safe */\uFEFFfnc main():int{return 42;}")));
+});
+
+test("internal typed-array slots defeat forged length and offset metadata",()=>{
+  const oversized=new Uint8Array(1024*1024+1);
+  Object.defineProperty(oversized,"length",{value:0});
+  Object.defineProperty(oversized,"buffer",{value:new ArrayBuffer(0)});
+  Object.defineProperty(oversized,"byteLength",{value:0});
+  assert.throws(()=>check(oversized),/1 MiB/);
+  const backing=bytes('xxxximport fnc x from "+/private";');
+  const view=new Uint8Array(backing.buffer,4);
+  Object.defineProperty(view,"length",{value:0});
+  assert.throws(()=>check(view),/verified native import graph/);
+});

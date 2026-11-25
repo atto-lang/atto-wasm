@@ -7,9 +7,25 @@
  * Scan source tokens, not substrings: skip quoted text, line comments and
  * nested block comments. Malformed UTF-8/comments/strings also fail closed.
  */
+// Inspect typed array internal slots: .buffer may be shadowed by an accessor.
+const typedBuffer = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype),"buffer").get;
+const typedByteLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype),"byteLength").get;
+const sharedByteLength = typeof SharedArrayBuffer === "function"
+  ? Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype,"byteLength").get : null;
+
 export function assertImportFreeSource(bytes) {
-  if (!(bytes instanceof Uint8Array) || bytes.length > 1024 * 1024)
+  if (!(bytes instanceof Uint8Array))
     throw Error("Oreslang scalar source must be bytes within the 1 MiB admission budget");
+  let backing, size;
+  try { backing = typedBuffer.call(bytes); size = typedByteLength.call(bytes); }
+  catch { throw Error("Oreslang scalar source requires genuine Uint8Array bytes"); }
+  if (size > 1024 * 1024)
+    throw Error("Oreslang scalar source must be bytes within the 1 MiB admission budget");
+  if (sharedByteLength) {
+    let shared = false;
+    try { sharedByteLength.call(backing); shared = true; } catch {}
+    if (shared) throw Error("Oreslang scalar source cannot use shared memory");
+  }
   const source = new TextDecoder("utf-8", {fatal: true}).decode(bytes);
   if (source.includes("\0")) throw Error("Oreslang source contains NUL byte");
   let i = 0;
@@ -17,17 +33,17 @@ export function assertImportFreeSource(bytes) {
   const identPart = c => /[A-Za-z0-9_]/.test(c);
   while (i < source.length) {
     if (source.startsWith("//", i)) {
-      // Treat CR and LF as line terminators. Skipping only LF can hide
-      // a live import after a CR-only comment from the admission gate.
+      // Treat CR/LF, NEL, and Unicode line/paragraph separators as boundaries.
+      // A live import after any comment terminator must remain visible.
       i += 2;
-      while (i < source.length && source[i] !== "\r" && source[i] !== "\n") i++;
+      while (i < source.length && !["\r", "\n", "\u0085", "\u2028", "\u2029"].includes(source[i])) i++;
       continue;
     }
     if (source.startsWith("/*", i)) {
       let depth = 1;
       i += 2;
       while (i < source.length && depth) {
-        if (source.startsWith("/*", i)) { depth++; i += 2; }
+        if (source.startsWith("/*", i)) { if (++depth > 128) throw Error("Oreslang block comment nesting exceeded"); i += 2; }
         else if (source.startsWith("*/", i)) { depth--; i += 2; }
         else i++;
       }

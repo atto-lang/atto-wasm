@@ -366,3 +366,46 @@ test("cleanup failure after durable commit returns success with explicit warning
   assert.ok(inventory.staging.some(name=>name.startsWith(".staging-")));
  }finally{await cleanup(w.dir)}
 });
+
+test("descriptor-bounded atomic release reads preserve byte identity and reject swapped pointer types",async()=>{
+ const w=await workspace();
+ try{
+  const published=await compileOresToWasm({...w,environment:"browser",publication:"atomic"});
+  const verified=await readAtomicRelease(w.output);
+  assert.equal(verified.releaseSha256,published.releaseSha256);
+  assert.equal(execute(verified.wasm),42n);
+  const pointer=w.output+".current.json", saved=pointer+".saved";
+  await rename(pointer,saved);
+  const {symlink}=await import("node:fs/promises");
+  try{
+   await symlink(saved,pointer);
+   await assert.rejects(readAtomicRelease(w.output),/invalid file/);
+  }finally{
+   await rm(pointer,{force:true});
+   await rename(saved,pointer);
+  }
+  assert.equal((await readAtomicRelease(w.output)).releaseSha256,published.releaseSha256);
+ }finally{await cleanup(w.dir)}
+});
+
+
+test("atomic release publisher rejects shared backing and spoofed byte length before filesystem IO",async()=>{
+ const w=await workspace();
+ try{
+  const fake={schemaVersion:1,kind:"llvm-ores-to-wasm32-core-experimental",
+   compilerSha256:"1".repeat(64),sourceSha256:"2".repeat(64),
+   llvmIrSha256:"3".repeat(64),wasmSha256:"0".repeat(64),
+   wasmBytes:8,exportName:"main"};
+  if(typeof SharedArrayBuffer==="function"){
+   const shared=new Uint8Array(new SharedArrayBuffer(8));
+   Object.defineProperty(shared,"buffer",{value:new ArrayBuffer(8)});
+   await assert.rejects(publishAtomicRelease({output:w.output,wasm:shared,provenance:fake}),
+     /shared Wasm publisher backing forbidden/);
+  }
+  const huge=new Uint8Array(16777217);
+  Object.defineProperty(huge,"byteLength",{value:8});
+  await assert.rejects(publishAtomicRelease({output:w.output,wasm:huge,provenance:fake}),
+    /Wasm budget/);
+  await assert.rejects(readFile(w.output+".current.json"),/ENOENT/);
+ }finally{await cleanup(w.dir)}
+});

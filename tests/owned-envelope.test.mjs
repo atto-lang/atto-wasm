@@ -265,35 +265,32 @@ test("hidden or symbol-bearing schema keys cannot bypass closed ABI shape",async
  assert.deepEqual(await decodeMessage(contract,valid),msg);
 });
 
-test("codec never invokes attacker-owned accessors during schema or message admission",async()=>{
- const good={variant:"Compute",fields:{text:"safe",n:42n}};
- let accesses=0;
- const dangerous=()=>{accesses++;throw Error("attacker getter invoked");};
- const variantType={tuple:["string"]};
- Object.defineProperty(variantType,"tuple",{enumerable:true,get:dangerous});
- const badSchema={schemaVersion:1,ownership:"copy",variants:[{
-  id:1,name:"Bad",fields:[{name:"value",type:variantType}]
- }]};
- await assert.rejects(encodeMessage(badSchema,{variant:"Bad",fields:{value:["safe"]}}),
-  /invalid type shape/);
- const variants=[{id:1,name:"Bad",fields:[{name:"n",type:"i64"}]}];
- Object.defineProperty(variants,0,{configurable:true,enumerable:true,get:dangerous});
- await assert.rejects(encodeMessage({...contract,variants},good),/invalid variants element/);
- const message={variant:"Compute",fields:{text:"safe",n:42n}};
- Object.defineProperty(message.fields,"n",{enumerable:true,get:dangerous});
- await assert.rejects(encodeMessage(contract,message),/invalid message fields shape/);
- const msg={fields:good.fields};
- Object.defineProperty(msg,"variant",{enumerable:true,get:dangerous});
- await assert.rejects(encodeMessage(contract,msg),/invalid message shape/);
- const enSchema={schemaVersion:1,ownership:"copy",variants:[{
-  id:1,name:"Enum",fields:[{name:"tag",type:{enum:[{id:1,name:"Some",payload:"i64"}]}}]
- }]};
- const enValue={variant:"Some"};
- Object.defineProperty(enValue,"value",{enumerable:true,get:dangerous});
- await assert.rejects(encodeMessage(enSchema,{variant:"Enum",fields:{tag:enValue}}),
-  /invalid enum value shape/);
- assert.equal(accesses,0,"schema validation must not execute getters");
- assert.deepEqual(await decodeMessage(contract,await encodeMessage(contract,good)),good);
+test("guest message descriptors must be own data, never executable getters",async()=>{
+ let calls=0;
+ const getter=()=>{calls++;return 42n;};
+ const fields={text:"safe"};
+ Object.defineProperty(fields,"n",{enumerable:true,get:getter});
+ await assert.rejects(encodeMessage(contract,{variant:"Compute",fields}),
+  /invalid message fields shape/);
+ assert.equal(calls,0,"field accessor must not execute");
+
+ const top={fields:{text:"safe",n:42n}};
+ Object.defineProperty(top,"variant",{enumerable:true,get(){
+  calls++;return "Compute";
+ }});
+ await assert.rejects(encodeMessage(contract,top),/invalid message shape/);
+ assert.equal(calls,0,"top-level variant getter must not execute");
+
+ const items=["a"];
+ Object.defineProperty(items,"0",{enumerable:true,get(){
+  calls++;return "a";
+ }});
+ const batch={variant:"Batch",fields:{
+  pair:["hi",1n],fixed:[true,false],items,
+  state:{variant:"None",value:null},blob:Uint8Array.of(1)
+ }};
+ await assert.rejects(encodeMessage(contract,batch),/sparse array\/list element/);
+ assert.equal(calls,0,"list item getter must not execute");
 });
 
 test("array element accessors and hidden schema array authority reject even for zero-byte elements",async()=>{
