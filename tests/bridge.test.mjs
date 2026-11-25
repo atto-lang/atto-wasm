@@ -138,11 +138,11 @@ test("source alias cannot swap .atto and .ores identity before compiler executio
  try{
   const marker=join(dir,"compiler-invoked"),compiler=join(dir,"fake.sh"),output=join(dir,"guest.wasm");
   await writeFile(compiler,["#!/bin/sh",'touch "'+marker+'"',"exit 1",""].join("\n"),{mode:0o700});
-  for(const [realName,aliasName] of [["real.ores","alias.atto"],["real.atto","alias.ores"],["real.ores","alias.ATTO"]]){
+  for(const [realName,aliasName] of [["real.ores","alias.atto"],["real.atto","alias.ores"],["real.ores","alias.ATTO"],["real.atto","same.atto"]]){
    const real=join(dir,realName),alias=join(dir,aliasName);
    await writeFile(real,"pub fnc main(): int { return 42; }\n");
    await symlink(real,alias);
-   await assert.rejects(()=>compileOresToWasm({compiler,source:alias,output}),/source alias extension differs/);
+   await assert.rejects(()=>compileOresToWasm({compiler,source:alias,output}),{code:"ELOOP"});
    await rm(alias);
   }
   await assert.rejects(()=>readFile(marker),/ENOENT/);
